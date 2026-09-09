@@ -1,0 +1,65 @@
+# RadarGen core/training/evaluation dependencies.
+# torch, torchvision and torchaudio are supplied by JSC modules.
+# triton is installed separately.
+# xformers is deliberately omitted: RadarGen has a PyTorch attention fallback.
+
+accelerate
+beautifulsoup4
+bs4
+came-pytorch
+diffusers==0.35.2
+einops
+ftfy
+gradio
+image-reward
+ipdb
+omegaconf
+optimum
+patch_conv
+peft
+pre-commit
+protobuf>=4.25.3
+pytorch-fid
+regex>=2025.10.22
+sentencepiece
+tensorboard
+tensorboardX
+timm==1.0.29
+transformers==4.57.6
+huggingface-hub==0.36.2
+wandb
+webdataset
+yapf
+spaces
+matplotlib
+termcolor
+pyrallis
+scikit-learn
+scikit-image
+
+# Foundation models
+h5py>=3.10.0
+imageio
+pandas
+Pillow>=10.2.0
+scipy
+tables
+tabulate
+tqdm
+trimesh
+jaxtyping
+flow_vis
+rerun-sdk
+minio
+torchmetrics
+
+# Dataset support
+truckscenes-devkit==1.0.0
+nuscenes-devkit==1.2.0
+
+# MMCV 1.x runtime dependencies
+addict
+PyYAML
+
+# Keep OpenCV compatible with the JSC NumPy 1.26 stack.
+opencv-python==4.10.0.84

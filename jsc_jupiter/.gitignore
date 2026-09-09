@@ -1,0 +1,5 @@
+logs/
+tmp/
+packages/
+*.pid
+__pycache__/
