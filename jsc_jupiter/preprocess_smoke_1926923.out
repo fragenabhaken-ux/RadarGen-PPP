@@ -1,0 +1,58 @@
+Setting vars
+SCRIPT_DIR       = /e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter
+REPO_DIR         = /e/project1/nxtaim-1/huber7/repos/RadarGen
+USER_PROJECT_DIR = /e/project1/nxtaim-1/huber7
+ENV_NAME         = env_radargen_jupiter
+ENV_DIR          = /e/project1/nxtaim-1/huber7/env_radargen_jupiter
+HF_HOME          = /e/project1/nxtaim-1/huber7/pretrained/huggingface
+TORCH_HOME       = /e/project1/nxtaim-1/huber7/pretrained/torch
+
+Activated env_radargen_jupiter
+ENV_DIR   = /e/project1/nxtaim-1/huber7/env_radargen_jupiter
+REPO_DIR  = /e/project1/nxtaim-1/huber7/repos/RadarGen
+CUDA_HOME = /e/software/default/stages/2025/software/CUDA/12
+HF_HOME   = /e/project1/nxtaim-1/huber7/pretrained/huggingface
+
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/bin/python
+Python 3.12.3
+=== NODE ===
+jpbo-079-41.jupiter.internal
+Mon Sep 21 17:06:34 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 595.71.05              Driver Version: 595.71.05      CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GH200 120GB             On  |   00000009:01:00.0 Off |                    0 |
+| N/A   46C    P0            106W /  680W |       4MiB /  97871MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA GH200 120GB             On  |   00000019:01:00.0 Off |                    0 |
+| N/A   46C    P0            110W /  680W |       3MiB /  97871MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   2  NVIDIA GH200 120GB             On  |   00000029:01:00.0 Off |                    0 |
+| N/A   46C    P0             94W /  680W |       6MiB /  97871MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   3  NVIDIA GH200 120GB             On  |   00000039:01:00.0 Off |                    0 |
+| N/A   46C    P0            102W /  680W |       4MiB /  97871MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+
+=== RADAR MAP SMOKE TEST ===
+Starting: Rank 0, World size 1, Local rank 0
+Saving radar maps to: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/smoke/radar_maps
+Initializing truckscenes dataset adapter...
+Rank 0: Processing 1 scenes (out of 1 total)
+[Rank 0] Scenes:   0%|          | 0/1 [00:00<?, ?it/s][Rank 0] Scenes:   0%|          | 0/1 [00:00<?, ?it/s, Scene: d08667f00c6245e89a20240a14aafd53 | Sample: 1/195][Rank 0] Scenes:   0%|          | 0/1 [00:01<?, ?it/s, Scene: d08667f00c6245e89a20240a14aafd53 | Sample: 2/195][Rank 0] Scenes:   0%|          | 0/1 [00:01<?, ?it/s, Scene: d08667f00c6245e89a20240a14aafd53 | Sample: 2/195]

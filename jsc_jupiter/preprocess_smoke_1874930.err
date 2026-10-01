@@ -1,0 +1,15 @@
+
+  [01;33mThis stage is deprecated. Please consider moving to a new stage (2026
+or newer)[0m
+
+
+The following have been reloaded with a version change:
+  1) sympy/1.13.1 => sympy/1.13.3
+
+Traceback (most recent call last):
+  File "/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/create_radar_maps_smoke.py", line 153, in <module>
+    main()
+  File "/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/create_radar_maps_smoke.py", line 81, in main
+    assert os.path.isdir(cfg.dataset_dir), f'Dataset directory {cfg.dataset_dir} does not exist'
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Dataset directory /p/data1/nxtaim/public/truckscenes/man-truckscenes does not exist

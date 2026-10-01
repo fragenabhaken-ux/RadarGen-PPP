@@ -1,0 +1,36 @@
+
+  [01;33mThis stage is deprecated. Please consider moving to a new stage (2026
+or newer)[0m
+
+
+The following have been reloaded with a version change:
+  1) sympy/1.13.1 => sympy/1.13.3
+
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/lib/python3.12/site-packages/truckscenes/truckscenes.py:93: UserWarning: The visualization dependencies are not installed on your system! Run 'pip install "truckscenes-devkit[all]"'.
+  warnings.warn('''The visualization dependencies are not installed on your system! '''
+Traceback (most recent call last):
+  File "/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/create_radar_maps_smoke.py", line 153, in <module>
+    main()
+  File "/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/create_radar_maps_smoke.py", line 131, in main
+    create_radar_maps_for_scene(
+  File "/e/project1/nxtaim-1/huber7/repos/RadarGen/radargen/radar_maps/creator.py", line 280, in create_radar_maps_for_scene
+    create_and_save_radar_maps_for_frame(
+  File "/e/project1/nxtaim-1/huber7/repos/RadarGen/radargen/radar_maps/creator.py", line 219, in create_and_save_radar_maps_for_frame
+    map_creation_output = create_radar_maps_for_frame(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/e/project1/nxtaim-1/huber7/repos/RadarGen/radargen/radar_maps/creator.py", line 132, in create_radar_maps_for_frame
+    pcl = adapter.load_radar_pointcloud(sample_data, nsweeps=nsweeps)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/e/project1/nxtaim-1/huber7/repos/RadarGen/radargen/datasets/truckscenes/adapter.py", line 437, in load_radar_pointcloud
+    points, _ = load_radar_multisweep(
+                ^^^^^^^^^^^^^^^^^^^^^^
+  File "/e/project1/nxtaim-1/huber7/repos/RadarGen/radargen/datasets/truckscenes/reader.py", line 471, in load_radar_multisweep
+    current_pc = RadarPointCloud.from_file(radar_file)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/e/project1/nxtaim-1/huber7/env_radargen_jupiter/lib/python3.12/site-packages/truckscenes/utils/data_classes.py", line 321, in from_file
+    radar = pypcd4.PointCloud.from_path(file_name)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/e/project1/nxtaim-1/huber7/env_radargen_jupiter/lib/python3.12/site-packages/pypcd4/pypcd4.py", line 260, in from_path
+    with open(path, mode="rb") as fp:
+         ^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: '/e/scratch/nxtaim-1/public/truckscenes/man-truckscenes/sweeps/RADAR_LEFT_FRONT/RADAR_LEFT_FRONT_1694870194805660.pcd'
