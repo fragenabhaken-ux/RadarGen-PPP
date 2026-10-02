@@ -1,0 +1,10 @@
+
+  [01;33mThis stage is deprecated. Please consider moving to a new stage (2026
+or newer)[0m
+
+
+The following have been reloaded with a version change:
+  1) sympy/1.13.1 => sympy/1.13.3
+
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/lib/python3.12/site-packages/truckscenes/truckscenes.py:93: UserWarning: The visualization dependencies are not installed on your system! Run 'pip install "truckscenes-devkit[all]"'.
+  warnings.warn('''The visualization dependencies are not installed on your system! '''

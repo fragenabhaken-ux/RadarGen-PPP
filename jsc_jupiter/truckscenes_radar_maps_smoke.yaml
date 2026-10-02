@@ -10,7 +10,7 @@
 
 # Dataset configuration
 dataset_name: truckscenes
-dataset_dir: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
+dataset_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/staging/018a60086f5e441fb09f476e55948b72
 dataset_version: v1.2-trainval
 
 # Output configuration

@@ -102,8 +102,18 @@ def main():
         for split in ['train', 'val']:
             scenes.extend(list(adapter.iter_scenes(split=split)))
 
-    # JUPITER smoke test: process exactly one scene
-    scenes = scenes[:1]
+    # JUPITER smoke test: process exactly the staged scene
+    target_scene_token = "018a60086f5e441fb09f476e55948b72"
+    scenes = [
+        (scene_token, samples)
+        for scene_token, samples in scenes
+        if scene_token == target_scene_token
+    ]
+    if len(scenes) != 1:
+        raise RuntimeError(
+            f"Expected exactly one scene with token {target_scene_token}, "
+            f"found {len(scenes)}"
+        )
 
     # Distribute scenes across GPUs
     local_scenes = distribute_across_ranks(scenes, rank, world_size)
