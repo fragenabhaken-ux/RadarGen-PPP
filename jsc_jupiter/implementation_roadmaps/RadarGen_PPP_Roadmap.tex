@@ -2657,43 +2657,43 @@ The configured pretrained path retains baseline dropout behavior.
 Configuration-only validation passed and unfinished-training refusal
 remained intact. Dataset/loss regression suites were not repeated.
 
-No compatible null embedding was found in the repository or searched local
-pretrained/cache roots, and the configured Hugging Face cache has no Gemma
-model. The required baseline asset is
+Slurm job \texttt{2164430} subsequently completed the actual pretrained
+GPU validation, as recorded in \texttt{wp4\_check\_2164430.out} and
+\texttt{wp4\_check\_2164430.err}. It generated the genuine Gemma
+empty-prompt embedding at
 \begin{lstlisting}
 output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth
 \end{lstlisting}
-with finite \texttt{uncond\_prompt\_embeds} of shape \((1,300,2304)\)
-and the required \texttt{uncond\_prompt\_embeds\_mask} of shape
-\((1,L)\), with binary values and at least one active token. The initializer
-validates both before model construction. Supply a genuine compatible baseline
-file, or prepare it from locally staged
-\texttt{Efficient-Large-Model/gemma-2-2b-it} tokenizer and model assets:
-\begin{lstlisting}
-source jsc_jupiter/activate_jupiter.sh
-python scripts/prepare_ppp_null_embedding.py \
-  --text-model-dir /path/to/local/gemma-2-2b-it --device cuda
-\end{lstlisting}
-This reproduces the baseline right-padded empty-prompt decoder branch with
-local-only loading; it never fabricates a zero embedding or downloads assets.
-The full fresh initializer therefore remains unverified through its actual
-baseline null replacement until that asset is provided.
+The initializer validates finite \texttt{uncond\_prompt\_embeds} of shape
+\((1,300,2304)\) and the required binary
+\texttt{uncond\_prompt\_embeds\_mask} of shape \((1,L)\), with at least
+one active token, before model construction. The actual fresh initializer,
+including the baseline null-embedding replacement, succeeded with this asset.
 
-Run the following only on an allocated GPU after preparing the null asset:
-\begin{lstlisting}
-python scripts/check_ppp_model.py \
-  --null-embed-path output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth
-\end{lstlisting}
-The probe clears gradients between losses and recomputes each forward to
-keep only one backward graph in memory. This explicit probe checks the
-pretrained condition encoding, BF16 forward,
-raw output range and separately finite, nonzero RCS and Doppler fields,
-PPP-only, RCS-only, and Doppler-only decoder/DiT loss gradients, FP32 decoder parameters,
-and decoder train/eval equivalence. It creates no optimizer or training loop.
-Full pretrained runtime validation is pending; no full 600M forward/backward,
-GPU verification, Slurm submission, sampling, evaluation, PDF compilation,
-commit, or push was performed. WP4 implementation and checkpoint inspection
-are complete subject to this explicitly retained runtime prerequisite.
+The job loaded the local SANA and DC-AE checkpoints listed above.
+SANA reported only the expected missing keys \texttt{modality\_pe} and
+\texttt{pos\_embed}, with no unexpected keys. Logged adapted shapes were
+input \((1152,99,1,1)\), modality embedding \((3,3)\), and decoder output
+convolution \((1,128,3,3)\); the decoder convolution was FP32 on CUDA
+before adaptation. Each of the three condition latents had shape
+\((1,32,16,16)\). The raw output minimum, maximum, mean, and standard
+deviation were respectively \(-0.41796875\), \(-0.03466796875\),
+\(-0.234375\), and \(0.054443359375\).
+
+The pretrained probe passed its separate finite, nonzero RCS and Doppler
+output assertions. PPP-only, RCS-only, and Doppler-only backward checks
+each passed, with finite nonzero gradients reaching the checked decoder
+and DiT parameters. The probe cleared gradients between losses and
+recomputed each forward, retaining only one backward graph at a time.
+The final pretrained forward/backward and decoder train/eval checks
+passed. These are actual pretrained GPU results, distinct from the earlier
+tiny-transformer and substitute-AE CPU tests. The error log contains
+library/environment warnings but no traceback or failed check.
+
+WP4 is complete within its model-construction and verification scope.
+Training-loop integration and training convergence remain unverified and
+belong to subsequent work packages; this probe created no optimizer or
+training loop and does not establish those results.
 
 \subsection{Replace diffusion inference with modality-conditioned direct prediction}
 
