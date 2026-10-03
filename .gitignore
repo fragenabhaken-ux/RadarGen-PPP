@@ -184,3 +184,19 @@ cython_debug/
 #.idea/
 
 /jsc_jupiter/required_radar_files.csv
+
+# Generated camera input manifests
+/jsc_jupiter/camera_input_manifests/
+
+# JUPITER job logs and generated launch-check reports
+/jsc_jupiter/*.out
+/jsc_jupiter/*.err
+/jsc_jupiter/hdf5_launch_check_[0-9]*/
+
+# Local script backups
+/jsc_jupiter/*.bak
+/jsc_jupiter/*.bak.*
+
+# Generated HDF5 data
+*.h5
+*.hdf5

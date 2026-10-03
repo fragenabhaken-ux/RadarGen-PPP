@@ -23,7 +23,8 @@ def create_bev_maps_for_frame(
     device: torch.device,
     resolution: int = 512,
     use_batched_inference: bool = True,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, str]:
+    depth_callback: Optional[Callable[[List[dict]], None]] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Create BEV color, segmentation, and velocity maps for a frame.
 
     Args:
@@ -34,12 +35,13 @@ def create_bev_maps_for_frame(
         device: PyTorch device
         resolution: Output resolution (coordinate_range comes from adapter)
         use_batched_inference: If True, use batched model inference for speedup
+        depth_callback: Optional observer of native t0 depth outputs; must not mutate them.
 
     Returns:
         Tuple of (bev_color_map, bev_seg_map, bev_velocity_map)
         - bev_color_map: (resolution, resolution, 3) RGB color map
         - bev_seg_map: (resolution, resolution, 3) Segmentation map
-        - bev_velocity_map: (resolution, resolution, 1) Velocity map
+        - bev_velocity_map: (resolution, resolution, 3) RGB uint8 velocity visualization map
     """
     # Get coordinate range from adapter normalization config
     coordinate_range = adapter.normalization.coordinate_range
@@ -78,6 +80,7 @@ def create_bev_maps_for_frame(
         use_batched_inference=use_batched_inference,
         doppler_min=norm.doppler_min,
         doppler_max=norm.doppler_max,
+        depth_callback=depth_callback,
     )
 
     return bev_color_map, bev_seg_map, bev_velocity_map

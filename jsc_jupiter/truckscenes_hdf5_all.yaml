@@ -1,0 +1,18 @@
+dataset_version: v1.2-trainval
+permanent_root: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
+archive_root: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/radar_input_archives
+staging_root: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/staging/hdf5_full
+output_root: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples
+baseline_radar_root: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/smoke/radar_maps
+resolution: 512
+point_limit: 50.0
+nsweeps: 1
+sigma: 2.0
+camera_views: null
+filter_camera_views: null
+use_batched_inference: true
+compare_frames:
+- 0
+- 50
+- 100
+camera_archive_root: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/camera_input_archives

@@ -103,6 +103,7 @@ def create_radar_maps_for_frame(
         nsweeps: int = 1,
         sigma_range: tuple = (2.0, 2.0),
         filter_camera_views: Optional[List[str]] = None,
+        radar_callback: Optional[Callable[[np.ndarray], None]] = None,
 ) -> RadarMapsCreationOutput:
     """
     Create radar maps (PD, RCS, Doppler) for a single frame.
@@ -124,6 +125,8 @@ def create_radar_maps_for_frame(
         nsweeps: Number of radar sweeps to aggregate
         sigma_range: Sigma values for Gaussian splatting
         filter_camera_views: Optional list of camera view names to filter by frustum
+        radar_callback: Observer of filtered metric detections before rasterization.
+                        Receives a copy, so changes cannot affect target maps.
 
     Returns:
         RadarMapsGenerationOutput containing PD, RCS, and Doppler maps
@@ -153,6 +156,9 @@ def create_radar_maps_for_frame(
     # 3. Filter by square range
     pcl = filter_by_range(pcl, point_limit)
     logger.debug(f"After range filter: {pcl.shape[0]} points (limit={point_limit}m)")
+
+    if radar_callback is not None:
+        radar_callback(pcl.copy())
 
     # 4. Normalize to image coordinates
     pcl = normalize_to_image_coords(pcl, point_limit, image_size)

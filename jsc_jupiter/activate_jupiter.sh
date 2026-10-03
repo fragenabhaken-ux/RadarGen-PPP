@@ -15,6 +15,9 @@ print(sysconfig.get_paths()["purelib"])
 PY
 )"
 
+export TORCH_HOME=/e/project1/nxtaim-1/huber7/pretrained/torch
+export HF_HOME=/e/project1/nxtaim-1/huber7/pretrained/huggingface
+
 export PYTHONPATH="${VENV_SITE}:${REPO_DIR}:${PYTHONPATH:-}"
 
 CUDA_HOME_DETECTED="$(python - <<'PY'
@@ -35,6 +38,7 @@ echo "ENV_DIR   = $ENV_DIR"
 echo "REPO_DIR  = $REPO_DIR"
 echo "CUDA_HOME = ${CUDA_HOME:-not detected}"
 echo "HF_HOME   = $HF_HOME"
+echo "TORCH_HOME = $TORCH_HOME"
 echo
 which python
 python -V

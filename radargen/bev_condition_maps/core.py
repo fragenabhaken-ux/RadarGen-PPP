@@ -1,6 +1,6 @@
 """Core BEV creation logic shared across inference and preprocessing pipelines."""
 
-from typing import Callable, List, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -30,6 +30,7 @@ def create_bev_maps_from_camera_data(
     doppler_min: float,
     doppler_max: float,
     use_batched_inference: bool = True,
+    depth_callback: Optional[Callable[[List[dict]], None]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Create BEV conditioning maps from raw camera data.
@@ -56,6 +57,7 @@ def create_bev_maps_from_camera_data(
         doppler_min: Minimum radial velocity bound in m/s
         doppler_max: Maximum radial velocity bound in m/s
         use_batched_inference: If True, use batched model inference for speedup
+        depth_callback: Optional observer of native t0 depth outputs. Must not mutate them.
 
     Returns:
         Tuple of (bev_color_map, bev_seg_map, bev_velocity_map)
@@ -137,6 +139,9 @@ def create_bev_maps_from_camera_data(
                 camera_images_t0, depth_outputs_t0, camera_images_t1, depth_outputs_t1, dts
             )
         ]
+
+    if depth_callback is not None:
+        depth_callback(depth_outputs_t0)
 
     # 2. Transform depth points to BEV reference frame
     all_points = transform_fn(depth_outputs_t0)
