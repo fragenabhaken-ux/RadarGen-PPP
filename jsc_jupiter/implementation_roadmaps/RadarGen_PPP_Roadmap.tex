@@ -3020,6 +3020,72 @@ Use a dedicated \texttt{torch.Generator} supplied by the PPP inference pipeline 
 \paragraph{Round-trip test.}
 The coordinate test from subsection~3 must verify that converting real metric radar points to PPP cells and then mapping those cells back to metric centers produces the expected orientation. In particular, include points with positive and negative \(y\) so a vertical-axis inversion cannot pass unnoticed.
 
+\subsection*{Work package 6 implementation and verification status
+(3 October 2026)}
+
+\paragraph{Implemented inference and sampling.}
+The separate \texttt{RadarGenPPPPipeline} loads the trained PPP
+wrapper, including both the DiT and scalar-output decoder, using
+the strict PPP checkpoint loader. Conditioning is processed with
+the existing HDF5 dataset transforms and frozen encoder.
+Inference uses evaluation mode, disabled gradients, the existing
+Gemma empty-prompt machinery, and one fixed-timestep DiT forward
+pass without conditioning dropout or iterative denoising.
+
+The pipeline returns log intensity, raw RCS, and raw Doppler fields.
+The sampler draws independent Poisson counts with cell masses
+\[
+    \lambda_{rc}=\frac{\exp(f_{\lambda,rc})}{HW},
+\]
+preserves multiple events per cell, and places events at metric
+pixel centers using the prescribed flipped-row mapping.
+Cubic mark transformations are applied once, without clipping or
+rounding. The output has shape $(N,4)$ with columns
+$[x,y,\mathrm{RCS},\mathrm{Doppler}]$.
+Sampling uses a dedicated seeded CPU random generator.
+
+\paragraph{Successful pretrained GPU smoke check.}
+Slurm job \texttt{2165710} successfully ran inference on one real
+HDF5 sample using the WP5 six-update checkpoint:
+\begin{lstlisting}
+output/RadarGen_PPP_WP5_smoke_2164843/checkpoints/epoch_0_step_6.pth
+\end{lstlisting}
+The selected sample was frame~0 of scene
+\texttt{018a60086f5e441fb09f476e55948b72}.
+All three predicted fields had shape $(512,512)$.
+The expected total count was approximately $1.749897$, and the
+sampled cloud contained one point. Repeating sampling from the
+same fields after resetting the dedicated generator to the same
+seed reproduced the point cloud exactly.
+
+The sampled RCS and Doppler out-of-range fractions were both zero.
+This observation concerns only one sampled point and does not
+establish mark calibration or general range compliance.
+The script completed its structural checks without a runtime
+error; dependency warnings did not prevent execution.
+
+\paragraph{Verification limits and remaining work.}
+The single-sample pretrained inference and seeded-sampling check
+has passed. This does not establish convergence, generation
+quality, or reproducibility across different hardware and software
+environments. The checkpoint had undergone only six training
+updates.
+
+Focused CPU tests were supplied, but their execution results were
+not included in the reviewed GPU logs. Their status must therefore
+remain unconfirmed until their output is recorded.
+
+The current HDF5 inference path reuses the training dataset,
+including target loading and rasterization and its rejection of
+empty ground-truth frames. Ground-truth targets do not enter the
+prediction path. Empty generated point clouds are supported by
+the sampler. No field cache is implemented; scene and frame
+identities are returned with predictions.
+
+WP7 evaluation metrics and subsequent training-quality checks
+remain separate work. Multi-rank training validation also remains
+pending.
+
 \subsection{Keep the RadarGen evaluation interface and add PPP-native count metrics}
 
 \paragraph{Original RadarGen metrics remain unchanged.}

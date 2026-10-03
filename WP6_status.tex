@@ -1,0 +1,12 @@
+\paragraph{Work package 6 implementation candidate.}
+A separate PPP inference pipeline, configuration, pixel-center Poisson sampler,
+CPU tests, and a one-sample GPU smoke script have been prepared from the WP5
+sources. The inference path reuses the training conditioning transforms, frozen
+encoder, live empty-text provider, and strict PPP wrapper checkpoint loader.
+The sampler preserves multiple events per cell and applies cubic mark links
+once. It returns physical coordinates and marks without clipping.
+Python and shell syntax checks passed during preparation. CPU runtime tests
+and actual pretrained GPU inference remain pending; the preparation environment
+has no PyTorch installation. This is not yet a verified WP6 completion.
+The HDF5 path currently reuses the training dataset, including target loading
+and its rejection of empty ground-truth frames; targets do not enter prediction.
