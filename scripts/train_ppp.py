@@ -54,8 +54,21 @@ def validate_ppp_config(config: SanaConfig) -> None:
     require(config.vae.vae_type == "dc-ae" and config.vae.weight_dtype == "float32", "PPP requires dc-ae with float32 weights")
     require(config.vae.vae_latent_dim == config.vae.vae_downsample_rate == 32, "PPP requires 32 latent channels and downsample rate 32")
     require(bool(config.vae.vae_pretrained), "vae.vae_pretrained is required")
+    indices = data.get("ppp_subset_indices")
+    if indices is not None:
+        require(isinstance(indices, list) and bool(indices) and
+                all(type(i) is int and i >= 0 for i in indices) and len(set(indices)) == len(indices),
+                "ppp_subset_indices must be distinct nonnegative integers")
     losses = config.train.extra
     require(isinstance(losses, dict), "train.extra must be a dictionary")
+    dropout = losses.get("conditioning_dropout", 0.1)
+    require(isinstance(dropout, (int, float)) and math.isfinite(dropout) and 0 <= dropout <= 1,
+            "conditioning_dropout must be in [0,1]")
+    diagnostic_interval = losses.get("overfit_diagnostic_interval", 0)
+    require(type(diagnostic_interval) is int and diagnostic_interval >= 0,
+            "overfit_diagnostic_interval must be a nonnegative integer")
+    require(not diagnostic_interval or (indices is not None and len(indices) <= 8),
+            "Overfit diagnostics require an explicit subset of at most eight samples")
     for key in ("ppp_weight", "rcs_weight", "doppler_weight"):
         require(positive(losses.get(key)), f"train.extra.{key} must be positive and finite")
     require(losses.get("normalize_ppp_by_gt_count") is True, "normalize_ppp_by_gt_count must be true")
@@ -105,7 +118,8 @@ def training_microbatch(model, condition_encoder, batch, text_provider, ppp_loss
         if any(c.shape != (batch_size, 32, latent_size, latent_size) for c in conditions):
             raise ValueError('Unexpected scaled condition latent shapes')
         # Baseline independently drops each complete conditioning batch at p=0.1.
-        conditions = [c * 0.0 if random.random() < 0.1 else c for c in conditions]
+        dropout = config.train.extra.get('conditioning_dropout', 0.1)
+        conditions = [c * 0.0 if random.random() < dropout else c for c in conditions]
         y, mask = text_provider(batch_size, accelerator.device)
         decoded = model(conditions, y, mask=mask, data_info=batch.get('data_info'))
     return compute_ppp_losses(decoded, batch, ppp_loss, config.train.extra)
@@ -201,6 +215,15 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     if dataset is None:
         from radargen.training.radargen_ppp_dataset import build_radargen_ppp_dataset_from_config
         dataset = build_radargen_ppp_dataset_from_config(config)
+    subset_indices = config.data.extra.get('ppp_subset_indices')
+    if subset_indices is not None:
+        from torch.utils.data import Subset
+        if max(subset_indices) >= len(dataset):
+            raise ValueError('PPP subset index outside validated inventory')
+        dataset = Subset(dataset, subset_indices)
+    diagnostic_interval = config.train.extra.get('overfit_diagnostic_interval', 0)
+    if diagnostic_interval and accelerator.num_processes != 1:
+        raise ValueError('WP8 overfit diagnostics currently require one GPU/process')
     sampler = DistributedRangedSampler(dataset, num_replicas=accelerator.num_processes,
                                        rank=accelerator.process_index)
     if len(sampler) == 0:
@@ -275,6 +298,13 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
             logger.info('PPP checkpoint saved: %s; progress=%s', last_saved, progress)
         accelerator.wait_for_everyone()
 
+    def diagnose():
+        if diagnostic_interval:
+            from radargen.training.ppp_overfit import diagnose_overfit
+            diagnose_overfit(accelerator.unwrap_model(model), encoder, dataset,
+                text_provider, ppp_loss, config, accelerator, progress['global_step'])
+
+    diagnose()
     stop = False
     for epoch in range(progress['epoch'], config.train.num_epochs):
         start_batch = progress['batch_in_epoch'] if epoch == progress['epoch'] else 0
@@ -319,6 +349,8 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                                                reduction='sum').item())
                 if progress['global_step'] % config.train.save_model_steps == 0 or stop:
                     save()
+                if diagnostic_interval and (progress['global_step'] % diagnostic_interval == 0 or stop):
+                    diagnose()
             del loss, logs
             if stop:
                 break

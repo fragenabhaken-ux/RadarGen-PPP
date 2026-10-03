@@ -66,9 +66,11 @@ GPU integration check has passed, including the existing sampled metrics
 and the new analytical PPP metrics. This is a functional check using a
 six-update checkpoint, not evidence of useful generation quality.
 Empty-cloud evaluation policy, populated object-level metric checks,
-and multi-rank training verification remain open. The next task is
-WP8's tiny-subset overfit test before loss-weight and learning-rate
-selection or full training.
+and multi-rank training verification remain open. WP8 is in progress:
+job \texttt{2166761} completed 200 updates on four fixed samples, with
+improving losses but without successful overfitting. The next experiment
+is a learning-rate range test with all three loss weights held at one.
+Full training is not yet ready to start.
 
 \subsection*{Recommended implementation order}
 
@@ -3446,9 +3448,10 @@ such clouds occur. Zero empties in three samples does not resolve that
 policy or establish their absence across a complete evaluation set.
 The inherited rejection of empty GT frames also remains a limitation.
 
-Proceed to WP8's tiny-subset overfit test using the implemented training
-path. Monitor finite losses and gradients, spatial predictions, marks,
-and expected counts. Distinguish the deduplicated active-cell count used
+WP8's first tiny-subset experiment subsequently completed using the
+implemented training path; its results and limitations are recorded below.
+Continue monitoring finite losses and gradients, spatial predictions,
+marks, and expected counts. Distinguish the deduplicated active-cell count used
 by the training objective from the continuous detection count used by
 evaluation. Loss-scale measurement, loss-weight and learning-rate
 selection, and multi-rank stability checks remain outstanding before
@@ -3605,13 +3608,151 @@ Verify that the PPP analytical count uses the evaluator's continuous filtered gr
 If the smoke-test PPP sample happens to produce zero whole-scene points, do not fabricate a detection. The sampler itself has behaved legally. For the smoke test, record this case and either choose another seed for testing the existing nonempty-only point-cloud metrics or skip those metric assertions. The final evaluation policy is handled separately as described in subsection~27.
 
 \paragraph{Progression after the smoke test.}
-Only after all structural assertions pass, proceed in this order:
+The experiment order was revised on 4 October 2026 after the first
+200-update tiny-subset run. Keep the unit loss weights fixed while
+investigating the learning rate, rather than changing both together:
 \begin{enumerate}[label=\arabic*.]
-    \item tiny-subset overfit test,
-    \item a few-thousand-update run with unit loss weights to measure loss scales,
-    \item selection of \(w_{\mathrm{PPP}},w_{\mathrm{RCS}},w_{\mathrm{Doppler}}\),
-    \item learning-rate range test,
-    \item short multi-GPU stability test,
-    \item full training.
+    \item initial tiny-subset experiment (completed; overfit not achieved),
+    \item learning-rate range test with unit loss weights (next; not implemented or run),
+    \item restore the pre-test state and repeat or continue the tiny-subset
+          experiment at a selected learning rate,
+    \item a few-thousand-update diagnostic run to measure loss scales;
+          revisit loss weights if the evidence warrants it,
+    \item short multi-GPU stability test and resolution of outstanding
+          verification requirements,
+    \item full training only after these checks support proceeding.
 \end{enumerate}
+
+\subsection*{Work package 8 implementation and initial results
+(4 October 2026)}
+
+\paragraph{Status: in progress, overfit not yet achieved.}
+The tiny-subset experiment uses the actual \texttt{scripts/train\_ppp.py}
+training loop. Optional subset selection and conditioning-dropout control,
+evaluation-mode diagnostics, and a summary script were added. The
+baseline training path was not modified. Two focused NumPy diagnostic
+tests passed locally, together with Python and shell syntax checks and
+patch-application checks. The subsequent GPU run provides runtime
+evidence for this experiment, not completion of every WP8 check.
+
+\paragraph{Experiment configuration.}
+Four fixed pairs (indices 0, 32, 64, and 96) from training scene
+\texttt{018a60086f5e441fb09f476e55948b72} were selected. Training started
+from the local pretrained SANA and DC-AE assets, not from the WP5
+six-update checkpoint. The diagnostic configuration used:
+\begin{itemize}
+    \item 200 optimizer updates, microbatch size one, and accumulation
+          over four microbatches: 800 training forward/backward passes;
+    \item CAME with unit PPP, RCS, and Doppler loss weights;
+    \item base LR $10^{-4}$, scaled by $\sqrt{4/256}$ to an effective
+          LR of $1.25\times10^{-5}$;
+    \item 20 warmup updates followed by a constant learning rate;
+    \item gradient clipping at $0.1$, bf16 autocast, and FP32 decoder parameters;
+    \item conditioning and class dropout disabled for this diagnostic;
+    \item evaluation on all four fixed samples at step zero and every
+          25 updates, with model modes and training RNG state restored afterward.
+\end{itemize}
+These are explicit experiment settings, not selected production
+hyperparameters. The original training defaults remain separate.
+
+\paragraph{Initial configuration failure and correction.}
+Job \texttt{2166629} stopped before any training updates. The configuration
+parser interpreted the explicitly supplied \texttt{auto\_lr.base\_batch\_size}
+as a string, causing division by a string during LR scaling. Removing
+that entry uses the scaling function's integer default of 256 and
+preserves the intended effective learning rate. This corrected
+configuration was used for the successful rerun.
+
+\paragraph{Successful execution of the 200-update experiment.}
+Job \texttt{2166761} completed all 200 updates and saved checkpoints at
+updates 100 and 200. The reviewed logs show finite reported losses and
+gradient norms, and successful generation of diagnostics and learning
+curves. The final checkpoint is:
+\begin{lstlisting}
+output/RadarGen_PPP_WP8_overfit_2166761/checkpoints/epoch_199_step_200.pth
+\end{lstlisting}
+The initial and final diagnostic means over the same four samples are:
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Quantity & Step 0 & Step 200 \\
+\midrule
+Total loss & 41.4631 & 24.9739 \\
+PPP loss & 12.0778 & 9.3463 \\
+RCS MAE (dBsm) & 12.2588 & 7.3147 \\
+Doppler MAE (m/s) & 17.1265 & 8.3129 \\
+Expected count & 1.8666 & 32.2128 \\
+Occupied training cells & 862 & 862 \\
+Continuous GT detections & 942.5 & 942.5 \\
+Mass fraction at occupied cells & 0.002762 & 0.002648 \\
+\bottomrule
+\end{tabular}
+\end{center}
+With unit weights, the reported raw mark losses equal their masked
+physical MAEs. These are training-subset diagnostics, not held-out results.
+The count target of the implemented training objective is the
+\emph{deduplicated occupied-cell count}; the continuous detection count
+remains the reference for evaluation metrics.
+
+\paragraph{Interpretation and limits.}
+All three losses improved between the initial and final evaluations,
+and both mark MAEs improved on each of the four samples. Nevertheless,
+the final expected count remains far below the training target. The
+average fraction of intensity assigned to occupied target cells did not
+improve. For reference, uniform intensity on the full $512\times512$
+grid would assign an average fraction $862/512^2\approx0.003288$ to
+these cells, exceeding the final observed fraction of about $0.002648$.
+This is a spatial-concentration diagnostic, not an additional loss.
+
+The reviewed frame-zero images show a broad increase in intensity
+without clear concentration along the target detections. Thus successful
+execution and decreasing losses do not establish successful overfitting.
+The sparse GT mark panels are poorly rendered in the current plots;
+improve them using visible point markers before detailed visual mark
+comparison. The target arrays and MAE calculations are present despite
+the nearly blank displayed GT mark panels. This plotting improvement
+has not yet been implemented.
+
+The logged gradient norms are measured before clipping and frequently
+exceed $0.1$. This does not by itself determine the parameter-update size
+under CAME, nor establish that the learning rate is too small.
+
+\paragraph{Next experiment: learning-rate range test.}
+Keep
+\[
+    w_{\mathrm{PPP}}=w_{\mathrm{RCS}}=w_{\mathrm{Doppler}}=1
+\]
+fixed initially. The similar loss magnitudes justify retaining this
+starting configuration for the LR experiment, but do not prove equal
+gradient influence. Loss-weight tuning is deferred rather than ruled out.
+
+Implement a short LR range test that increases the \emph{actual optimizer
+learning rate}, preferably exponentially, from a small value toward the
+unstable region. Plot total and component losses against the learning
+rate actually used for each optimizer update. Keep the selected data,
+optimizer, accumulation, clipping, and loss weights fixed. Record
+nonfinite values and stop on a defined divergence criterion. Choose a
+candidate LR from the improving region below instability, then verify
+it in a separate tiny-subset run.
+
+The LR bounds, number of updates, smoothing and divergence criterion,
+and starting model/optimizer state must be specified before execution.
+They have not yet been selected or validated. Preserve the pre-test
+checkpoint and optimizer state; discard the sweep's parameter updates
+and restore the recorded starting state before normal training.
+Use a separate output directory and do not overwrite the successful
+200-update checkpoint or bypass strict resume-contract validation.
+The LR range test is planned, not implemented or run.
+
+\paragraph{Saved diagnostics and remaining verification.}
+The run's \texttt{overfit\_diagnostics/} directory contains
+\texttt{metrics.jsonl}, initial and periodic per-sample PNG/NPZ outputs,
+and \texttt{learning\_curves.png}. TensorBoard logging was disabled;
+no TensorBoard image integration has been implemented.
+
+WP8 remains open until tiny-subset fitting, subsequent optimization
+choices, and multi-rank stability are verified. Previously documented
+empty-cloud evaluation limitations and populated object-level metric
+checks also remain open. No full training run has been launched.
+
 \end{document}

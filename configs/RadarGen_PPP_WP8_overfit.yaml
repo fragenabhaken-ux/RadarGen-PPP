@@ -1,0 +1,122 @@
+# Diagnostic overrides only. Fresh pretrained initialization, four fixed samples.
+data:
+  dataset_dir: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
+  ppp_data_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples
+  image_size: 512
+  load_text_feat: false
+  load_vae_feat: false
+  type: RadarGenPPPDatasetWrapper
+  sort_dataset: false
+  extra:
+    dataset_name: truckscenes
+    eval_split: train
+    dataset_version: v1.2-trainval
+    ppp_scene_tokens:
+    - 018a60086f5e441fb09f476e55948b72
+    ppp_processing_signature: 22b8e2aa32ac33f9ebd50fda28a5e1fde16df5377c85b179f4b6a191dd6ffad6
+    camera_freq: 10.0
+    camera_views:
+    - CAMERA_RIGHT_FRONT
+    - CAMERA_LEFT_FRONT
+    - CAMERA_RIGHT_BACK
+    - CAMERA_LEFT_BACK
+    coordinate_range: 50.0
+    rcs_min: -20.0
+    rcs_max: 66.0
+    doppler_min: -120.0
+    doppler_max: 120.0
+    ppp_subset_indices:
+    - 0
+    - 32
+    - 64
+    - 96
+model:
+  model: RadarGenPPP_600M_P1_D28
+  image_size: 512
+  mixed_precision: bf16
+  fp32_attention: true
+  load_from: /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+  resume_from: null
+  aspect_ratio_type: ASPECT_RATIO_512
+  attn_type: linear
+  ffn_type: glumbconv
+  mlp_acts:
+  - silu
+  - silu
+  - null
+  mlp_ratio: 2.5
+  use_pe: false
+  qk_norm: false
+  class_dropout_prob: 0.0
+  pag_applied_layers: []
+  extra:
+    num_maps: 3
+    num_conditions: 3
+    fixed_timestep: 0.0
+vae:
+  vae_type: dc-ae
+  vae_pretrained: /e/project1/nxtaim-1/huber7/pretrained/dc-ae-f32c32-sana-1.1/
+  weight_dtype: float32
+  scale_factor: 0.41407
+  vae_latent_dim: 32
+  vae_downsample_rate: 32
+  sample_posterior: true
+text_encoder:
+  text_encoder_name: gemma-2-2b-it
+  y_norm: true
+  y_norm_scale_factor: 0.01
+  model_max_length: 300
+  chi_prompt: []
+scheduler:
+  predict_v: true
+  noise_schedule: linear_flow
+  pred_sigma: false
+  flow_shift: 3.0
+  weighting_scheme: logit_normal
+  logit_mean: 0.0
+  logit_std: 1.0
+  vis_sampler: flow_dpm-solver
+train:
+  num_workers: 0
+  seed: 42
+  train_batch_size: 1
+  num_epochs: 10000
+  gradient_accumulation_steps: 4
+  grad_checkpointing: true
+  gradient_clip: 0.1
+  optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    - 0.9999
+    eps:
+    - 1.0e-30
+    - 1.0e-16
+    lr: 0.0001
+    type: CAMEWrapper
+    weight_decay: 0.0
+  lr_schedule: constant
+  lr_schedule_args:
+    num_warmup_steps: 20
+  log_interval: 10
+  save_model_epochs: 10000
+  work_dir: output/RadarGen_PPP_WP8_overfit
+  online_metric: false
+  eval_metric_step: 5000
+  online_metric_dir: metric_helper
+  extra:
+    ppp_weight: 1.0
+    rcs_weight: 1.0
+    doppler_weight: 1.0
+    normalize_ppp_by_gt_count: true
+    velocity_loss_mode: signed_l1
+    conditioning_dropout: 0.0
+    overfit_diagnostic_interval: 25
+  save_model_steps: 100
+  training_hours: 1.25
+  auto_lr:
+    rule: sqrt
+work_dir: output/RadarGen_PPP_WP8_overfit
+name: radargen_ppp_wp8_overfit
+tracker_project_name: train_radargen_ppp
+report_to: none

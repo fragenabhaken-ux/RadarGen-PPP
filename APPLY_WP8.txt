@@ -1,0 +1,8 @@
+Apply from repository root after WP7:
+
+git apply --check wp8.patch && git apply wp8.patch
+python tests/test_ppp_overfit.py
+python scripts/train_ppp.py --config_path configs/RadarGen_PPP_WP8_overfit.yaml --validate-only
+sbatch jsc_jupiter/wp8_overfit.sbatch
+
+See README_WP8.md after applying. GPU verification pending.

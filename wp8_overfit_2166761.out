@@ -1,0 +1,35 @@
+Setting vars
+SCRIPT_DIR       = /e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter
+REPO_DIR         = /e/project1/nxtaim-1/huber7/repos/RadarGen
+USER_PROJECT_DIR = /e/project1/nxtaim-1/huber7
+ENV_NAME         = env_radargen_jupiter
+ENV_DIR          = /e/project1/nxtaim-1/huber7/env_radargen_jupiter
+HF_HOME          = /e/project1/nxtaim-1/huber7/pretrained/huggingface
+TORCH_HOME       = /e/project1/nxtaim-1/huber7/pretrained/torch
+
+Activated env_radargen_jupiter
+ENV_DIR   = /e/project1/nxtaim-1/huber7/env_radargen_jupiter
+REPO_DIR  = /e/project1/nxtaim-1/huber7/repos/RadarGen
+CUDA_HOME = /e/software/default/stages/2025/software/CUDA/12
+HF_HOME   = /e/project1/nxtaim-1/huber7/pretrained/huggingface
+TORCH_HOME = /e/project1/nxtaim-1/huber7/pretrained/torch
+
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/bin/python
+Python 3.12.3
+Cannot import NystromAttention, you can not run original UniDepth. UniDepthV2 is available.
+[Sana] Loading model from /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+[DC-AE] Loading model from /e/project1/nxtaim-1/huber7/pretrained/dc-ae-f32c32-sana-1.1/
+Loading weights from local directory
+loss_total: 41.4631 -> 24.9739
+loss_ppp_raw: 12.0778 -> 9.34633
+loss_rcs_raw: 12.2588 -> 7.31474
+loss_doppler_raw: 17.1265 -> 8.31286
+expected_count: 1.86664 -> 32.2128
+active_cell_count: 862 -> 862
+continuous_gt_count: 942.5 -> 942.5
+count_abs_error_active: 860.133 -> 829.787
+rcs_mae_at_targets: 12.2588 -> 7.31474
+doppler_mae_at_targets: 17.1265 -> 8.31286
+mass_fraction_at_target_cells: 0.00276162 -> 0.00264836
+Observed steps: 0 -> 200; samples: 4
+Review per-sample images and curves; no automatic overfit pass threshold is imposed.

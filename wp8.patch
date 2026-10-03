@@ -1,0 +1,493 @@
+--- a/scripts/train_ppp.py
++++ b/scripts/train_ppp.py
+@@ -54,8 +54,21 @@
+     require(config.vae.vae_type == "dc-ae" and config.vae.weight_dtype == "float32", "PPP requires dc-ae with float32 weights")
+     require(config.vae.vae_latent_dim == config.vae.vae_downsample_rate == 32, "PPP requires 32 latent channels and downsample rate 32")
+     require(bool(config.vae.vae_pretrained), "vae.vae_pretrained is required")
++    indices = data.get("ppp_subset_indices")
++    if indices is not None:
++        require(isinstance(indices, list) and bool(indices) and
++                all(type(i) is int and i >= 0 for i in indices) and len(set(indices)) == len(indices),
++                "ppp_subset_indices must be distinct nonnegative integers")
+     losses = config.train.extra
+     require(isinstance(losses, dict), "train.extra must be a dictionary")
++    dropout = losses.get("conditioning_dropout", 0.1)
++    require(isinstance(dropout, (int, float)) and math.isfinite(dropout) and 0 <= dropout <= 1,
++            "conditioning_dropout must be in [0,1]")
++    diagnostic_interval = losses.get("overfit_diagnostic_interval", 0)
++    require(type(diagnostic_interval) is int and diagnostic_interval >= 0,
++            "overfit_diagnostic_interval must be a nonnegative integer")
++    require(not diagnostic_interval or (indices is not None and len(indices) <= 8),
++            "Overfit diagnostics require an explicit subset of at most eight samples")
+     for key in ("ppp_weight", "rcs_weight", "doppler_weight"):
+         require(positive(losses.get(key)), f"train.extra.{key} must be positive and finite")
+     require(losses.get("normalize_ppp_by_gt_count") is True, "normalize_ppp_by_gt_count must be true")
+@@ -105,7 +118,8 @@
+         if any(c.shape != (batch_size, 32, latent_size, latent_size) for c in conditions):
+             raise ValueError('Unexpected scaled condition latent shapes')
+         # Baseline independently drops each complete conditioning batch at p=0.1.
+-        conditions = [c * 0.0 if random.random() < 0.1 else c for c in conditions]
++        dropout = config.train.extra.get('conditioning_dropout', 0.1)
++        conditions = [c * 0.0 if random.random() < dropout else c for c in conditions]
+         y, mask = text_provider(batch_size, accelerator.device)
+         decoded = model(conditions, y, mask=mask, data_info=batch.get('data_info'))
+     return compute_ppp_losses(decoded, batch, ppp_loss, config.train.extra)
+@@ -201,6 +215,15 @@
+     if dataset is None:
+         from radargen.training.radargen_ppp_dataset import build_radargen_ppp_dataset_from_config
+         dataset = build_radargen_ppp_dataset_from_config(config)
++    subset_indices = config.data.extra.get('ppp_subset_indices')
++    if subset_indices is not None:
++        from torch.utils.data import Subset
++        if max(subset_indices) >= len(dataset):
++            raise ValueError('PPP subset index outside validated inventory')
++        dataset = Subset(dataset, subset_indices)
++    diagnostic_interval = config.train.extra.get('overfit_diagnostic_interval', 0)
++    if diagnostic_interval and accelerator.num_processes != 1:
++        raise ValueError('WP8 overfit diagnostics currently require one GPU/process')
+     sampler = DistributedRangedSampler(dataset, num_replicas=accelerator.num_processes,
+                                        rank=accelerator.process_index)
+     if len(sampler) == 0:
+@@ -275,6 +298,13 @@
+             logger.info('PPP checkpoint saved: %s; progress=%s', last_saved, progress)
+         accelerator.wait_for_everyone()
+ 
++    def diagnose():
++        if diagnostic_interval:
++            from radargen.training.ppp_overfit import diagnose_overfit
++            diagnose_overfit(accelerator.unwrap_model(model), encoder, dataset,
++                text_provider, ppp_loss, config, accelerator, progress['global_step'])
++
++    diagnose()
+     stop = False
+     for epoch in range(progress['epoch'], config.train.num_epochs):
+         start_batch = progress['batch_in_epoch'] if epoch == progress['epoch'] else 0
+@@ -319,6 +349,8 @@
+                                                reduction='sum').item())
+                 if progress['global_step'] % config.train.save_model_steps == 0 or stop:
+                     save()
++                if diagnostic_interval and (progress['global_step'] % diagnostic_interval == 0 or stop):
++                    diagnose()
+             del loss, logs
+             if stop:
+                 break
+--- /dev/null
++++ b/radargen/training/ppp_overfit.py
+@@ -0,0 +1,107 @@
++"""Read-only eval-mode diagnostics for an explicitly selected tiny subset."""
++import json
++from pathlib import Path
++import numpy as np
++
++
++def summarize_fields(fields, point_mask, rcs_target, doppler_target, bounds):
++    """Physical diagnostics on a single sample; inputs are detached NumPy arrays."""
++    f = np.asarray(fields, dtype=np.float64)
++    mask = np.asarray(point_mask, dtype=bool)
++    if f.shape != (3, *mask.shape) or not mask.any() or not np.isfinite(f).all():
++        raise ValueError('Invalid diagnostic fields or target mask')
++    with np.errstate(over='raise', invalid='raise'):
++        mass = np.exp(f[0]) / mask.size
++        marks = f[1:] ** 3
++    if not np.isfinite(mass).all() or not np.isfinite(marks).all():
++        raise ValueError('Nonfinite diagnostic predictions')
++    count = float(mass.sum())
++    result = dict(expected_count=count, active_cell_count=int(mask.sum()),
++        count_abs_error_active=abs(count-int(mask.sum())),
++        log_intensity_min=float(f[0].min()), log_intensity_max=float(f[0].max()),
++        cell_mass_min=float(mass.min()), cell_mass_max=float(mass.max()),
++        mass_fraction_at_target_cells=float(mass[mask].sum()/count) if count > 0 else 0.)
++    for i, (name, target) in enumerate(zip(('rcs', 'doppler'), (rcs_target, doppler_target))):
++        low, high = bounds[name]
++        values = marks[i]
++        outside = (values < low) | (values > high)
++        result.update({f'{name}_mae_at_targets': float(np.abs(values[mask]-target[mask]).mean()),
++            f'{name}_raw_min': float(f[i+1].min()), f'{name}_raw_max': float(f[i+1].max()),
++            f'{name}_physical_min': float(values.min()), f'{name}_physical_max': float(values.max()),
++            f'{name}_outside_fraction_all_cells': float(outside.mean()),
++            f'{name}_outside_fraction_target_cells': float(outside[mask].mean()),
++            f'{name}_outside_fraction_intensity_weighted': float(mass[outside].sum()/count) if count > 0 else 0.})
++    return result, mass, marks
++
++
++def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, accelerator, step):
++    import h5py
++    import torch
++    from torch.utils.data import default_collate
++    from accelerate.utils import send_to_device
++    from scripts.train_ppp import compute_ppp_losses
++    from radargen.training.ppp_checkpoint import capture_rng_state, restore_rng_state
++    import matplotlib
++    matplotlib.use('Agg')
++    import matplotlib.pyplot as plt
++    import logging
++    log = logging.getLogger('ppp_overfit')
++    # Diagnostics must not change the training RNG stream or model modes.
++    generator = torch.Generator()
++    rng = capture_rng_state(generator)
++    modes = [(module, module.training) for module in model.modules()]
++    directory = Path(config.work_dir)/'overfit_diagnostics'
++    directory.mkdir(parents=True, exist_ok=True)
++    bounds = {key: (config.data.extra[key+'_min'], config.data.extra[key+'_max'])
++              for key in ('rcs', 'doppler')}
++    rows = []
++    try:
++        model.eval()
++        if encoder.training or any(p.requires_grad or p.grad is not None for p in encoder.parameters()):
++            raise ValueError('Condition encoder must remain frozen and in eval mode')
++        with torch.no_grad():
++            for index in range(len(dataset)):
++                sample = dataset[index]
++                batch = send_to_device(default_collate([sample]), accelerator.device)
++                with accelerator.autocast():
++                    conditions = encoder([batch[k] for k in ('bev_color_map','bev_seg_map','bev_velocity_map')])
++                    y, text_mask = text_provider(1, accelerator.device)
++                    decoded = model(conditions, y, mask=text_mask, data_info=batch['data_info'])
++                _, losses = compute_ppp_losses(decoded, batch, ppp_loss, config.train.extra)
++                fields = decoded[0,:,0].float().cpu().numpy()
++                mask = sample['point_mask'][0].numpy().astype(bool)
++                rcs, doppler = (sample[k][0].numpy() for k in ('rcs_target','doppler_target'))
++                stats, mass, marks = summarize_fields(fields, mask, rcs, doppler, bounds)
++                # Dataset access above validates immutable source and metadata.
++                source = dataset.dataset.frame_index[dataset.indices[index]][0]
++                with h5py.File(source, 'r') as handle:
++                    continuous_count = len(handle['ppp_targets/rcs'])
++                identity = sample['data_info']
++                row = dict(step=step, scene=identity['scene_token'], frame=int(identity['frame_idx']),
++                    continuous_gt_count=continuous_count,
++                    count_abs_error_continuous=abs(stats['expected_count']-continuous_count),
++                    **stats, **{key: float(value.item()) for key,value in losses.items()})
++                rows.append(row)
++                np.savez_compressed(directory/f'step_{step:06d}_sample_{index}.npz',
++                    fields=fields, point_mask=mask, rcs_target=rcs, doppler_target=doppler)
++                fig, axes = plt.subplots(2,3,figsize=(12,7))
++                panels = (np.log10(np.maximum(mass, 1e-30)), np.where(mask,rcs,np.nan), np.where(mask,doppler,np.nan),
++                          mask, marks[0], marks[1])
++                titles = ('log10 predicted cell mass','GT RCS at retained cells','GT Doppler at retained cells',
++                          'GT occupied cells','Predicted RCS (physical)','Predicted Doppler (physical)')
++                for ax, panel, title in zip(axes.flat, panels, titles):
++                    im=ax.imshow(panel, origin='upper'); ax.set_title(title); fig.colorbar(im,ax=ax)
++                fig.suptitle(f'Step {step}, frame {row["frame"]}: expected={stats["expected_count"]:.2f}, '
++                             f'active={stats["active_cell_count"]}, continuous={continuous_count}')
++                fig.tight_layout(); fig.savefig(directory/f'step_{step:06d}_sample_{index}.png',dpi=110); plt.close(fig)
++        with (directory/'metrics.jsonl').open('a') as stream:
++            for row in rows:
++                stream.write(json.dumps(row, allow_nan=False)+'\n')
++        mean = {key: float(np.mean([row[key] for row in rows])) for key in
++                ('loss_total','loss_ppp_raw','loss_rcs_raw','loss_doppler_raw','expected_count',
++                 'active_cell_count','count_abs_error_active','rcs_mae_at_targets','doppler_mae_at_targets')}
++        log.info('WP8 eval step %d: %s', step, json.dumps(mean, allow_nan=False))
++    finally:
++        for module, training in modes:
++            module.training = training
++        restore_rng_state(rng, generator)
+--- /dev/null
++++ b/scripts/summarize_ppp_overfit.py
+@@ -0,0 +1,47 @@
++#!/usr/bin/env python3
++"""Summarize deterministic tiny-subset evaluations; no convergence claim."""
++import argparse
++import json
++from pathlib import Path
++import numpy as np
++
++
++def main():
++    parser=argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('work_dir')
++    args=parser.parse_args()
++    directory=Path(args.work_dir)/'overfit_diagnostics'
++    rows=[json.loads(line) for line in (directory/'metrics.jsonl').read_text().splitlines() if line]
++    steps=sorted({r['step'] for r in rows})
++    if not steps:
++        raise ValueError('No diagnostics recorded')
++    keys=('loss_total','loss_ppp_raw','loss_rcs_raw','loss_doppler_raw','expected_count',
++          'active_cell_count','continuous_gt_count','count_abs_error_active',
++          'rcs_mae_at_targets','doppler_mae_at_targets','mass_fraction_at_target_cells')
++    grouped={step:{(r['scene'],r['frame']):r for r in rows if r['step']==step} for step in steps}
++    identities=set(grouped[steps[0]])
++    if any(set(group)!=identities for group in grouped.values()):
++        raise ValueError('Incomplete or inconsistent diagnostic sample sets')
++    means={key:[float(np.mean([r[key] for r in grouped[step].values()])) for step in steps] for key in keys}
++    for key in keys:
++        print(f'{key}: {means[key][0]:.6g} -> {means[key][-1]:.6g}')
++    print(f'Observed steps: {steps[0]} -> {steps[-1]}; samples: {len(identities)}')
++    import matplotlib
++    matplotlib.use('Agg')
++    import matplotlib.pyplot as plt
++    fig,axes=plt.subplots(2,2,figsize=(11,8))
++    for key in ('loss_ppp_raw','loss_rcs_raw','loss_doppler_raw'):
++        axes[0,0].plot(steps,means[key],label=key)
++    for key in ('expected_count','active_cell_count','continuous_gt_count'):
++        axes[0,1].plot(steps,means[key],label=key)
++    for key in ('rcs_mae_at_targets','doppler_mae_at_targets'):
++        axes[1,0].plot(steps,means[key],label=key)
++    axes[1,1].plot(steps,means['mass_fraction_at_target_cells'],label='Mass fraction at GT cells')
++    for ax in axes.flat:
++        ax.set_xlabel('Optimizer update'); ax.legend(); ax.grid(alpha=.3)
++    fig.tight_layout(); fig.savefig(directory/'learning_curves.png',dpi=140); plt.close(fig)
++    print('Review per-sample images and curves; no automatic overfit pass threshold is imposed.')
++
++
++if __name__=='__main__':
++    main()
+--- /dev/null
++++ b/configs/RadarGen_PPP_WP8_overfit.yaml
+@@ -0,0 +1,123 @@
++# Diagnostic overrides only. Fresh pretrained initialization, four fixed samples.
++data:
++  dataset_dir: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
++  ppp_data_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples
++  image_size: 512
++  load_text_feat: false
++  load_vae_feat: false
++  type: RadarGenPPPDatasetWrapper
++  sort_dataset: false
++  extra:
++    dataset_name: truckscenes
++    eval_split: train
++    dataset_version: v1.2-trainval
++    ppp_scene_tokens:
++    - 018a60086f5e441fb09f476e55948b72
++    ppp_processing_signature: 22b8e2aa32ac33f9ebd50fda28a5e1fde16df5377c85b179f4b6a191dd6ffad6
++    camera_freq: 10.0
++    camera_views:
++    - CAMERA_RIGHT_FRONT
++    - CAMERA_LEFT_FRONT
++    - CAMERA_RIGHT_BACK
++    - CAMERA_LEFT_BACK
++    coordinate_range: 50.0
++    rcs_min: -20.0
++    rcs_max: 66.0
++    doppler_min: -120.0
++    doppler_max: 120.0
++    ppp_subset_indices:
++    - 0
++    - 32
++    - 64
++    - 96
++model:
++  model: RadarGenPPP_600M_P1_D28
++  image_size: 512
++  mixed_precision: bf16
++  fp32_attention: true
++  load_from: /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
++  resume_from: null
++  aspect_ratio_type: ASPECT_RATIO_512
++  attn_type: linear
++  ffn_type: glumbconv
++  mlp_acts:
++  - silu
++  - silu
++  - null
++  mlp_ratio: 2.5
++  use_pe: false
++  qk_norm: false
++  class_dropout_prob: 0.0
++  pag_applied_layers: []
++  extra:
++    num_maps: 3
++    num_conditions: 3
++    fixed_timestep: 0.0
++vae:
++  vae_type: dc-ae
++  vae_pretrained: /e/project1/nxtaim-1/huber7/pretrained/dc-ae-f32c32-sana-1.1/
++  weight_dtype: float32
++  scale_factor: 0.41407
++  vae_latent_dim: 32
++  vae_downsample_rate: 32
++  sample_posterior: true
++text_encoder:
++  text_encoder_name: gemma-2-2b-it
++  y_norm: true
++  y_norm_scale_factor: 0.01
++  model_max_length: 300
++  chi_prompt: []
++scheduler:
++  predict_v: true
++  noise_schedule: linear_flow
++  pred_sigma: false
++  flow_shift: 3.0
++  weighting_scheme: logit_normal
++  logit_mean: 0.0
++  logit_std: 1.0
++  vis_sampler: flow_dpm-solver
++train:
++  num_workers: 0
++  seed: 42
++  train_batch_size: 1
++  num_epochs: 10000
++  gradient_accumulation_steps: 4
++  grad_checkpointing: true
++  gradient_clip: 0.1
++  optimizer:
++    betas:
++    - 0.9
++    - 0.999
++    - 0.9999
++    eps:
++    - 1.0e-30
++    - 1.0e-16
++    lr: 0.0001
++    type: CAMEWrapper
++    weight_decay: 0.0
++  lr_schedule: constant
++  lr_schedule_args:
++    num_warmup_steps: 20
++  log_interval: 10
++  save_model_epochs: 10000
++  work_dir: output/RadarGen_PPP_WP8_overfit
++  online_metric: false
++  eval_metric_step: 5000
++  online_metric_dir: metric_helper
++  extra:
++    ppp_weight: 1.0
++    rcs_weight: 1.0
++    doppler_weight: 1.0
++    normalize_ppp_by_gt_count: true
++    velocity_loss_mode: signed_l1
++    conditioning_dropout: 0.0
++    overfit_diagnostic_interval: 25
++  save_model_steps: 100
++  training_hours: 1.25
++  auto_lr:
++    rule: sqrt
++    base_batch_size: 256
++work_dir: output/RadarGen_PPP_WP8_overfit
++name: radargen_ppp_wp8_overfit
++tracker_project_name: train_radargen_ppp
++report_to: none
+--- /dev/null
++++ b/jsc_jupiter/wp8_overfit.sbatch
+@@ -0,0 +1,22 @@
++#!/bin/bash
++#SBATCH --job-name=ppp_wp8_overfit
++#SBATCH --account=nxtaim-1
++#SBATCH --partition=booster
++#SBATCH --nodes=1
++#SBATCH --ntasks=1
++#SBATCH --cpus-per-task=72
++#SBATCH --gres=gpu:1
++#SBATCH --time=01:30:00
++#SBATCH --output=wp8_overfit_%j.out
++#SBATCH --error=wp8_overfit_%j.err
++set -euo pipefail
++cd /e/project1/nxtaim-1/huber7/repos/RadarGen
++source jsc_jupiter/activate_jupiter.sh
++export OMP_NUM_THREADS=8
++export HF_HUB_OFFLINE=1
++export TRANSFORMERS_OFFLINE=1
++WP8_WORK_DIR="output/RadarGen_PPP_WP8_overfit_${SLURM_JOB_ID}"
++srun --cpus-per-task=72 --cpu-bind=verbose python -u scripts/train_ppp.py \
++  --config_path configs/RadarGen_PPP_WP8_overfit.yaml \
++  --work_dir "$WP8_WORK_DIR" --max-updates 200
++python scripts/summarize_ppp_overfit.py "$WP8_WORK_DIR"
+--- /dev/null
++++ b/tests/test_ppp_overfit.py
+@@ -0,0 +1,35 @@
++"""NumPy-only tests of WP8 diagnostic links and count semantics."""
++import importlib.util
++from pathlib import Path
++import unittest
++import numpy as np
++path = Path(__file__).resolve().parents[1]/'radargen/training/ppp_overfit.py'
++spec = importlib.util.spec_from_file_location('ppp_overfit_diagnostics',path)
++module = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(module)
++
++
++class DiagnosticTests(unittest.TestCase):
++    def test_counts_and_physical_marks(self):
++        fields = np.zeros((3,2,2)); fields[0] = np.log(8); fields[1] = 2; fields[2] = -3
++        mask = np.array([[True,False],[False,True]])
++        stats,mass,marks = module.summarize_fields(fields,mask,np.full((2,2),8),np.full((2,2),-27),
++                                                  {'rcs':(-20,66),'doppler':(-10,10)})
++        self.assertAlmostEqual(stats['expected_count'],8)
++        self.assertEqual(stats['active_cell_count'],2)
++        self.assertAlmostEqual(stats['count_abs_error_active'],6)
++        self.assertAlmostEqual(stats['mass_fraction_at_target_cells'],.5)
++        self.assertEqual(stats['rcs_mae_at_targets'],0)
++        self.assertEqual(stats['doppler_mae_at_targets'],0)
++        self.assertEqual(stats['doppler_outside_fraction_intensity_weighted'],1)
++        np.testing.assert_allclose(mass,2)
++        np.testing.assert_array_equal(marks[1],-27)
++
++    def test_rejects_invalid_fields(self):
++        fields = np.zeros((3,2,2)); fields[0,0,0]=np.nan
++        with self.assertRaises(ValueError):
++            module.summarize_fields(fields,np.ones((2,2),bool),np.zeros((2,2)),np.zeros((2,2)),{})
++
++
++if __name__ == '__main__':
++    unittest.main()
+--- /dev/null
++++ b/README_WP8.md
+@@ -0,0 +1,68 @@
++# WP8: first tiny-subset overfit experiment
++
++This is the first WP8 experiment, not completion of WP8 or a production run.
++Use the actual `scripts/train_ppp.py` loop with four fixed validated HDF5 pairs
++(indices 0, 32, 64, 96 in the configured single training scene). Start fresh
++from local SANA/DC-AE assets, not from the six-update smoke checkpoint.
++No downloads or embedding regeneration. No jobs have been submitted here.
++
++Explicit diagnostic choices:
++- 200 updates, batch size 1, four microbatches per update; each update sees all
++  four selected samples using the existing sampler.
++- Same CAME optimizer, unit loss weights, FP32 decoder, bf16 autocast and 0.1
++  gradient clipping. Base LR 1e-4 with existing sqrt batch scaling gives
++  effective LR 1.25e-5 for effective batch size four.
++- Warmup 20 updates instead of 2000. Constant schedule thereafter.
++- Condition dropout and model class dropout disabled only in this diagnostic
++  configuration. Normal training retains its original defaults.
++- Initial and every-25-update eval-mode diagnostics without condition dropout.
++  Model modes and Python/NumPy/Torch RNG states are restored afterward.
++- Save checkpoints every 100 updates and on the time/update stop. Up to roughly
++  75 minutes of loop runtime, inside a 90-minute Slurm allocation. This is a
++  safety budget, not a runtime estimate. Inspect the actual last update.
++
++The subset indices are in `data.extra`, and dropout/diagnostic settings are in
++`train.extra`, so they are covered by the existing resume contract. Do not resume
++an old WP5 checkpoint into this changed training contract. No baseline training
++files are changed. Only PPP training gains opt-in subset and diagnostics support.
++
++## Apply and run
++
++Apply `wp8.patch` from the repository root, then:
++
++```bash
++python tests/test_ppp_overfit.py
++python scripts/train_ppp.py --config_path configs/RadarGen_PPP_WP8_overfit.yaml --validate-only
++sbatch jsc_jupiter/wp8_overfit.sbatch
++```
++
++CPU NumPy diagnostics tests, Python syntax, YAML checks and shell syntax passed
++locally. PyTorch/Accelerate integration and pretrained execution are NOT tested
++in this local environment (PyTorch unavailable). Run the two commands before
++submitting. Existing WP5/WP7 GPU results are prior evidence, not WP8 validation.
++
++## What to inspect
++
++The unique job output directory contains `overfit_diagnostics/metrics.jsonl`,
++per-step/per-sample PNGs and NPZ arrays, `learning_curves.png`, and checkpoints.
++Images use array row/column coordinates; physical coordinates retain the
++existing WP6 convention. Color scales are automatic, so use numeric records
++or NPZ data for exact across-step comparisons. Marks are never clipped.
++
++Read losses at the same fixed eval samples, rather than comparing different
++training microbatches. Expected count should move toward **active-cell count**,
++the count in the deduplicated training objective. Continuous GT count is also
++reported for comparison but is not the direct training target count. Check
++that intensity concentrates at target cells and both physical mark MAEs
++improve. A positive count change alone does not establish successful overfit.
++Out-of-range mark fractions are reported over all cells, target cells and
++weighted by predicted intensity. Training logs retain gradient norm and LR.
++
++The summary reports changes; it does not invent an automatic convergence
++threshold. If 200 updates fail to overfit, inspect curves before extending the
++run or changing hyperparameters. Do not declare model quality from this test.
++Next WP8 tasks: resolve outstanding structural checks, loss-scale run, weight
++selection, LR range test, and short multi-GPU stability run before full training.
++
++Send the `.out` and `.err` logs first. For visual review, upload the curves and
++initial/final PNGs from `overfit_diagnostics/`.

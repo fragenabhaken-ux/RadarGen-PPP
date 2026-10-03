@@ -1,0 +1,38 @@
+
+  [01;33mThis stage is deprecated. Please consider moving to a new stage (2026
+or newer)[0m
+
+
+The following have been reloaded with a version change:
+  1) sympy/1.13.1 => sympy/1.13.3
+
+cpu_bind=THREADS - jpbo-046-22, task  0  0 [308919]: mask 0xffffffffffffffffff set
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/lib/python3.12/site-packages/mmcv/__init__.py:20: UserWarning: On January 1, 2023, MMCV will release v2.0.0, in which it will remove components related to the training process and add a data transformation module. In addition, it will rename the package names mmcv to mmcv-lite and mmcv-full to mmcv. See https://github.com/open-mmlab/mmcv/blob/master/docs/en/compatibility.md for more details.
+  warnings.warn(
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/lib/python3.12/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+/e/project1/nxtaim-1/huber7/repos/RadarGen/diffusion/model/nets/fastlinear/modules/nn/norm.py:186: UserWarning: Cannot import apex RMSNorm, switch to vanilla implementation
+  warnings.warn("Cannot import apex RMSNorm, switch to vanilla implementation")
+2026-10-04 06:45:35 - [Sana] - WARNING - use pe: False, position embed interpolation: 1.0, base size: 16
+2026-10-04 06:45:35 - [Sana] - WARNING - attention type: linear; ffn type: glumbconv; autocast linear attn: False
+/e/project1/nxtaim-1/huber7/repos/RadarGen/UniDepth/unidepth/utils/chamfer_distance.py:9: UserWarning: !! To run evaluation you need KNN. Please compile KNN: `cd unidepth/ops/knn with && bash compile.sh`.
+  warnings.warn(
+2026-10-04 06:45:41 - [Sana] - INFO - Load checkpoint from /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth. Load ema: False.
+INFO:radargen.training.ppp_initialization:SANA missing keys: ['modality_pe', 'pos_embed']; unexpected keys: []
+INFO:radargen.training.ppp_initialization:PPP PatchEmbedMS.proj initialized: (1152, 99, 1, 1)
+INFO:radargen.training.ppp_initialization:DC-AE output before adaptation: in=128 kernel=(3, 3) stride=(1, 1) padding=(1, 1) dtype=torch.float32 device=cuda:0
+INFO:radargen.training.ppp_initialization:PPP adapted shapes: input=(1152, 99, 1, 1) modality=(3, 3) output=(1, 128, 3, 3)
+Traceback (most recent call last):
+  File "/e/project1/nxtaim-1/huber7/repos/RadarGen/scripts/train_ppp.py", line 425, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/e/project1/nxtaim-1/huber7/repos/RadarGen/scripts/train_ppp.py", line 420, in main
+    run_training(config, options)
+  File "/e/project1/nxtaim-1/huber7/repos/RadarGen/scripts/train_ppp.py", line 236, in run_training
+    lr_scale_ratio = auto_scale_lr(config.train.train_batch_size * accelerator.num_processes *
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/e/project1/nxtaim-1/huber7/repos/RadarGen/diffusion/utils/optimizer.py", line 38, in auto_scale_lr
+    scale_ratio = math.sqrt(effective_bs / base_batch_size)
+                            ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for /: 'int' and 'str'
+srun: error: jpbo-046-22: task 0: Exited with exit code 1
