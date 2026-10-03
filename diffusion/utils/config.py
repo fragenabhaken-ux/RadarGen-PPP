@@ -23,6 +23,7 @@ class BaseConfig:
 @dataclass
 class DataConfig(BaseConfig):
     dataset_dir: Optional[str] = None
+    ppp_data_dir: Optional[str] = None
     radar_maps_dir: Optional[str] = None
     bev_conditioning_maps_dir: Optional[str] = None
     caption_proportion: Dict[str, int] = field(default_factory=lambda: {"prompt": 1})

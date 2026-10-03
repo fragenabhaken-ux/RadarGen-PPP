@@ -1,0 +1,2957 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{listings}
+
+\geometry{left=2.3cm,right=2.3cm,top=2.3cm,bottom=2.3cm}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue,citecolor=blue}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    columns=fullflexible,
+    breaklines=true,
+    frame=single,
+    showstringspaces=false
+}
+
+\title{RadarGen-PPP: Detailed Implementation Specification}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section{Big Picture}
+
+\noindent
+This document specifies the implementation of a marked Poisson point process (PPP) variant of RadarGen. It is intended to be sufficiently explicit to guide step-by-step implementation with an LLM while preserving the original RadarGen code as a reproducible baseline. The specification was prepared against the public RadarGen repository as inspected on 1 October 2026 and against the previous MMSegmentation PPP implementation supplied with this project.
+
+\medskip
+
+\noindent
+The main design principle is to change only what is required by the new probabilistic formulation. The original BEV conditioning pipeline, pretrained SANA initialization, shared three-modality transformer organization, text-conditioning interface, distributed training infrastructure, and RadarGen evaluation metrics should be retained where possible. The Gaussian and Voronoi radar target maps, radar-target autoencoder encoding, diffusion noising objective, iterative diffusion sampling, and IRL1 point recovery are replaced.
+
+\medskip
+
+\noindent
+Throughout this document, the three radar modalities use the fixed order
+\[
+    k=0:\mathrm{density},\qquad
+    k=1:\mathrm{RCS},\qquad
+    k=2:\mathrm{Doppler}.
+\]
+This ordering is important because the current RadarGen implementation does not pass an external modality ID. Instead, it reshapes the batch into a modality dimension \(V=3\), adds one learned row of \texttt{modality\_pe} to each modality, and jointly processes the three modality streams.
+
+\medskip
+
+\noindent
+Where the current repository does not determine a design choice uniquely, this document marks the point explicitly as an \textbf{implementation check}. Such a check should be resolved by a small runtime probe before proceeding rather than by silently inventing behavior.
+
+\subsection*{Recommended implementation order}
+
+The numbered subsections below organize the required changes by topic.
+They are not a strict implementation sequence: some later subsections
+provide prerequisites for earlier ones. Implement the changes in the
+following order, preserving the original RadarGen path as a reproducible
+baseline.
+
+\begin{table}[htbp]
+\centering
+\small
+\renewcommand{\arraystretch}{1.2}
+\begin{tabularx}{\textwidth}{@{}c X p{2.7cm}@{}}
+\toprule
+Order & Work package & Specification subsections \\
+\midrule
+
+1 &
+\textbf{Set up a separate place to configure and run PPP training.}
+Create the PPP configuration and training-script skeleton.
+Shared files may be extended where necessary, but the original
+RadarGen training behavior must remain unchanged when selecting
+the baseline path. &
+23 and setup from 5 \\
+
+2 &
+\textbf{Turn the stored samples into batches the model can learn from.}
+Load the three conditioning images and exact radar detections
+from the existing HDF5 files.
+Convert detections into a binary point mask and sparse RCS and
+Doppler target grids using the specified collision policy.
+Verify coordinates, normalization, split handling, batching,
+and conditioning-tensor equivalence with the baseline. &
+1--4 \\
+
+3 &
+\textbf{Define how we measure errors in the model's predictions.}
+Implement the PPP location loss and the RCS and Doppler mark losses.
+Check their values and gradients on small synthetic examples
+before connecting them to the model. &
+20 \\
+
+4 &
+\textbf{Make the model predict radar intensity and marks directly
+from the conditioning images.}
+Remove the noisy radar-latent input from the PPP path while
+preserving the three modality streams.
+Keep the conditioning encoder frozen and adapt the trainable
+decoder to output one scalar field per modality.
+Load pretrained weights in the prescribed order and verify
+shapes, modality ordering, and trainable parameters. &
+12--15, 17--19, 24 \\
+
+5 &
+\textbf{Connect everything so the model can learn from a batch.}
+Run conditioning images through the encoder, DiT, and decoder,
+then calculate the losses and update the trainable parameters.
+Include both the DiT and decoder in the optimizer and checkpoints.
+Verify gradient flow and checkpoint restoration, including
+optimizer and learning-rate scheduler state. &
+5--11, 16, 21--22 \\
+
+6 &
+\textbf{Turn the model's predictions into a synthetic radar
+point cloud.}
+Predict the three scalar fields in one direct forward pass.
+Sample point locations from the PPP intensity and attach the
+predicted RCS and Doppler marks.
+Verify coordinate recovery, physical units, and reproducibility
+with a fixed random seed. &
+25--26 \\
+
+7 &
+\textbf{Measure how well the generated radar matches the real data.}
+Apply the existing RadarGen metrics to sampled point clouds.
+Add analytical PPP expected-count and hit-probability metrics,
+keeping them distinct from sampled metrics.
+Compare counts against the evaluator's continuous filtered
+detections, not the deduplicated training mask. &
+27 \\
+
+8 &
+\textbf{Start with small training tests before committing to
+a full run.}
+Complete the end-to-end smoke test and verify that the model
+can overfit a tiny subset.
+Measure loss scales, select loss weights, and test learning rates.
+Run a short multi-GPU stability test before full training. &
+28 \\
+
+\bottomrule
+\end{tabularx}
+\caption{Recommended implementation order.
+Subsection references refer to the numbered specification
+subsections below. Verify each component as it is implemented.
+HDF5 preprocessing is already implemented; step~2 consumes
+the existing files.}
+\end{table}
+\paragraph{Configuration and entry-point skeleton.}
+The first work package establishes the PPP-specific configuration
+fields, file locations, and entry point. It does not require a runnable
+training pipeline. Complete the configuration and entry point
+incrementally as the dataset, model, and loss components become available.
+
+\paragraph{Verify each component as it is implemented.}
+Build the checks in subsection~28 incrementally rather than postponing
+verification until the complete pipeline exists. In particular:
+\begin{itemize}
+    \item During target and dataset implementation, verify coordinate
+    orientation, collision handling, HDF5 metadata, and equivalence of
+    the transformed BEV conditioning tensors with the baseline.
+    \item During loss implementation, check the loss values and gradients
+    on small synthetic inputs.
+    \item During model and decoder implementation, verify tensor shapes,
+    modality ordering, pretrained-weight loading, and the intended
+    frozen and trainable parameters.
+    \item Once the training path is connected, verify gradient flow
+    through the DiT and decoder and perform the checkpoint
+    save-and-reload test.
+    \item During inference and evaluation implementation, verify seeded
+    sampling, inverse coordinate mapping, and the distinction between
+    sampled metrics and analytical expected-count metrics.
+\end{itemize}
+
+\paragraph{Strict runtime initialization order.}
+Although the implementation work can be organized as above, the
+fresh-training initialization sequence in subsection~24 must be respected:
+\begin{enumerate}
+    \item Construct the bare DiT with the original SANA input projection
+    and load the pretrained SANA weights.
+    \item Only then expand the input projection for the PPP conditioning
+    and modality channels.
+    \item Load the pretrained DC-AE weights before replacing its
+    three-channel output convolution with the single-channel PPP output.
+    \item Freeze the condition encoder, enable decoder training, and
+    construct the complete DiT--decoder training wrapper.
+    \item Build the optimizer on that complete training wrapper so that
+    it includes both the DiT and decoder parameters.
+\end{enumerate}
+
+\paragraph{First implementation milestone.}
+Start with the configuration skeleton and subsections~1--4 on one or a
+few samples. Verify the sparse targets, coordinate round trip, and
+conditioning-tensor equivalence before preprocessing the full dataset.
+
+\paragraph{Progression to full training.}
+After all end-to-end structural checks in subsection~28 pass, proceed with
+a tiny-subset overfit test, a short run with unit loss weights to measure
+loss scales, loss-weight selection, a learning-rate range test, a short
+multi-GPU stability test, and finally full training.
+
+\section{Preprocessing Implementations}
+
+\subsection{JSC staging of TruckScenes radar and camera sweeps}
+
+RadarGen constructs frames at camera frequency and, for every frame,
+matches the temporally closest measurement of each of the six radar
+sensors. With the repository configuration \texttt{nsweeps: 1},
+exactly one radar measurement per sensor is loaded. If the selected
+measurement is a non-keyframe, its \texttt{sample\_data} entry points
+to \texttt{sweeps/.../*.pcd}; therefore radar sweep files are required
+even though no temporal sweep accumulation is performed.
+
+The BEV conditioning pipeline additionally loads consecutive camera
+frames at times $t_0$ and $t_1$. Non-keyframe camera images are also
+stored under \texttt{sweeps/}. Consequently, complete preprocessing
+requires both radar and camera sweeps, together with the keyframe
+files under \texttt{samples/} and the dataset metadata.
+
+Copying the complete \texttt{sweeps/} directory to JSC was avoided
+because it contains several million small files. Instead, the
+required files were enumerated using the preprocessing adapter and
+bundled into per-scene \texttt{tar.zst} archives. Bundling with
+\texttt{tar} reduces the number of stored files, while \texttt{zstd}
+additionally compresses their contents. Since JPEG images are already
+compressed, the main benefit for camera images is the reduction in
+file count.
+
+\paragraph{Radar file enumeration.}
+
+The script
+\begin{lstlisting}
+jsc_jupiter/list_required_radar_files.py
+\end{lstlisting}
+uses the same \texttt{TruckScenesAdapter.iter\_scenes()} logic as the
+preprocessing pipeline and records the selected radar file for every
+frame and sensor. It is executed with:
+\begin{lstlisting}[language=bash]
+cd /e/project1/nxtaim-1/huber7/repos/RadarGen
+source jsc_jupiter/activate_jupiter.sh
+python jsc_jupiter/list_required_radar_files.py
+\end{lstlisting}
+
+It produces:
+\begin{lstlisting}
+jsc_jupiter/required_radar_files.csv
+jsc_jupiter/required_radar_files.txt
+\end{lstlisting}
+
+The CSV contains, among other fields,
+\texttt{split}, \texttt{scene\_token}, \texttt{frame\_index},
+\texttt{sensor}, \texttt{sample\_data\_token}, and
+\texttt{relative\_path}. The required sweep subset was extracted as:
+\begin{lstlisting}[language=bash]
+grep '^sweeps/' \
+    jsc_jupiter/required_radar_files.txt \
+    > jsc_jupiter/required_sweep_files.txt
+\end{lstlisting}
+
+This identified 448,741 unique radar sweep PCD files.
+
+\paragraph{Camera file enumeration.}
+
+The initial preparation included radar sweeps but omitted the camera
+sweeps required for BEV conditioning. Camera files were therefore
+enumerated separately using
+\texttt{TruckScenesAdapter.iter\_scenes()} and
+\texttt{adapter.camera\_views}. Every frame was included, including
+the final frame of each scene used as $t_1$.
+
+The configured camera views were:
+\begin{lstlisting}
+CAMERA_RIGHT_FRONT
+CAMERA_LEFT_FRONT
+CAMERA_RIGHT_BACK
+CAMERA_LEFT_BACK
+\end{lstlisting}
+
+The enumeration covered 480 scenes and 93,515 frames. Its scene-token
+set was checked against the radar enumeration and matched exactly.
+The resulting camera file counts were:
+\begin{center}
+\begin{tabular}{lr}
+\hline
+Category & Number of unique files \\
+\hline
+Camera images under \texttt{samples/} & 75,317 \\
+Camera images under \texttt{sweeps/}  & 298,743 \\
+Total camera images                 & 374,060 \\
+\hline
+\end{tabular}
+\end{center}
+
+The enumeration produced:
+\begin{lstlisting}
+jsc_jupiter/camera_input_manifests/required_camera_files.csv
+jsc_jupiter/camera_input_manifests/required_camera_files.txt
+jsc_jupiter/camera_input_manifests/manifests/<scene_token>.txt
+\end{lstlisting}
+
+The CSV records each frame-camera reference. The global TXT file
+deduplicates all required camera paths, while each per-scene manifest
+contains only the deduplicated camera sweep paths to be archived.
+Camera keyframes remain accessible through the existing
+\texttt{samples/} directory.
+
+\paragraph{Archive preparation on the entry node.}
+
+The original TruckScenes dataset is available at:
+\begin{lstlisting}[language=bash]
+SRC=/p/data1/nxtaim/public/truckscenes/man-truckscenes
+\end{lstlisting}
+
+Radar and camera archives are prepared in separate working
+directories:
+\begin{lstlisting}[language=bash]
+RADAR_WORK=/p/data1/nxtaim/users/huber7/radargen_sweep_pack
+CAMERA_WORK=/p/data1/nxtaim/users/huber7/radargen_camera_pack
+\end{lstlisting}
+
+For radar sweeps, one manifest per scene was generated from
+\texttt{required\_radar\_files.csv}. The following code is run in the
+radar packaging directory containing that CSV:
+\begin{lstlisting}[language=Python]
+import csv
+from collections import defaultdict
+from pathlib import Path
+
+groups = defaultdict(set)
+
+with open("required_radar_files.csv", newline="") as f:
+    for row in csv.DictReader(f):
+        path = row["relative_path"]
+        if path.startswith("sweeps/"):
+            groups[row["scene_token"]].add(path)
+
+manifest_dir = Path("manifests")
+manifest_dir.mkdir(parents=True, exist_ok=True)
+
+for scene, paths in groups.items():
+    (manifest_dir / f"{scene}.txt").write_text(
+        "".join(path + "\n" for path in sorted(paths))
+    )
+\end{lstlisting}
+
+This produced 480 radar scene manifests. The original radar archives
+were created using the following loop:
+\begin{lstlisting}[language=bash]
+WORK="$RADAR_WORK"
+mkdir -p "$WORK/archives"
+
+for manifest in "$WORK"/manifests/*.txt; do
+    scene=$(basename "$manifest" .txt)
+    archive="$WORK/archives/${scene}.tar.zst"
+
+    [ -f "$archive" ] && continue
+
+    tar -C "$SRC" -cf - -T "$manifest" \
+        | zstd -T0 -o "$archive"
+done
+\end{lstlisting}
+
+This original loop skipped an archive based only on its existence.
+It did not establish completeness for an archive left by an
+interrupted run. The camera packaging procedure below uses explicit
+validation and temporary output names instead.
+
+The camera manifests were copied to the entry-node working directory:
+\begin{lstlisting}[language=bash]
+mkdir -p "$CAMERA_WORK/manifests" "$CAMERA_WORK/archives"
+
+rsync -ah --progress \
+    /e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/camera_input_manifests/ \
+    "$CAMERA_WORK/"
+\end{lstlisting}
+
+Camera archives were then created with the following restartable
+procedure:
+\begin{lstlisting}[language=bash]
+bash <<'BASH'
+set -euo pipefail
+export LC_ALL=C
+
+SRC=/p/data1/nxtaim/public/truckscenes/man-truckscenes
+WORK=/p/data1/nxtaim/users/huber7/radargen_camera_pack
+
+command -v zstd >/dev/null
+test -d "$SRC/sweeps"
+
+shopt -s nullglob
+manifests=("$WORK"/manifests/*.txt)
+
+if [ "${#manifests[@]}" -ne 480 ]; then
+    echo "ERROR: Expected 480 manifests, found ${#manifests[@]}"
+    exit 1
+fi
+
+listing=$(mktemp "$WORK/archive_listing.XXXXXX")
+trap 'rm -f "$listing"' EXIT
+
+index=0
+for manifest in "${manifests[@]}"; do
+    scene=$(basename "$manifest" .txt)
+    archive="$WORK/archives/${scene}.tar.zst"
+    index=$((index + 1))
+
+    echo "[$index/480] $scene"
+
+    if [ -f "$archive" ]; then
+        tar --zstd -tf "$archive" | sort > "$listing"
+        if ! cmp -s "$manifest" "$listing"; then
+            echo "ERROR: Archive does not match manifest: $archive"
+            exit 1
+        fi
+        echo "  Existing archive validated."
+        continue
+    fi
+
+    partial=$(mktemp "$WORK/archives/${scene}.partial.XXXXXX")
+
+    if ! tar -C "$SRC" -cf - --verbatim-files-from -T "$manifest" \
+        | zstd -1 -T4 -c > "$partial"; then
+        echo "ERROR: Packaging failed. Incomplete file: $partial"
+        exit 1
+    fi
+
+    tar --zstd -tf "$partial" | sort > "$listing"
+
+    if ! cmp -s "$manifest" "$listing"; then
+        echo "ERROR: Archive contents differ from manifest: $partial"
+        exit 1
+    fi
+
+    mv "$partial" "$archive"
+    echo "  Created and validated."
+done
+
+echo "All 480 camera archives validated."
+du -sh "$WORK/archives"
+BASH
+\end{lstlisting}
+
+All 480 camera archives passed the archive-member comparison against
+their manifests. Their combined disk usage was approximately
+116\,GiB. This validation checks archive readability and the expected
+member paths; image decoding is checked separately during
+preprocessing.
+
+The original metadata-relative paths, such as
+\texttt{sweeps/RADAR\_LEFT\_FRONT/...pcd} and
+\texttt{sweeps/CAMERA\_RIGHT\_FRONT/...jpg}, are preserved in the
+archives. The existing metadata-based loaders therefore require no
+path changes.
+
+\paragraph{Transfer to JSC scratch storage.}
+
+The radar archives were transferred to:
+\begin{lstlisting}[language=bash]
+RADAR_DEST=/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/radar_input_archives
+
+mkdir -p "$RADAR_DEST"
+rsync -ah --progress \
+    "$RADAR_WORK/archives/" \
+    "$RADAR_DEST/"
+\end{lstlisting}
+
+Completed camera archives were transferred separately:
+\begin{lstlisting}[language=bash]
+CAMERA_DEST=/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/camera_input_archives
+
+mkdir -p "$CAMERA_DEST"
+rsync -ah --info=progress2 --partial \
+    --include='*.tar.zst' --exclude='*' \
+    "$CAMERA_WORK/archives/" \
+    "$CAMERA_DEST/"
+\end{lstlisting}
+
+The filename filter excludes unfinished packaging files. The
+destination was checked to contain 480 camera archives.
+
+The resulting layout contains two archives per scene:
+\begin{lstlisting}
+radar_input_archives/<scene_token>.tar.zst
+camera_input_archives/<scene_token>.tar.zst
+\end{lstlisting}
+
+Thus, the selected radar and camera sweeps are represented by
+960 archives across 480 scenes. Existing keyframe files and metadata
+remain separate.
+
+\paragraph{Temporary scene staging.}
+
+During preprocessing, the radar and camera archives for the current
+scene are extracted into the same temporary dataset root. The
+\texttt{samples/} and metadata directories are then linked from the
+existing base dataset.
+
+The following shell example illustrates the layout for a scene token
+stored in \texttt{SCENE}:
+\begin{lstlisting}[language=bash]
+(
+set -euo pipefail
+
+ROOT=/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen
+BASE=/e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
+
+mkdir -p "$ROOT/staging"
+STAGE=$(mktemp -d "$ROOT/staging/${SCENE}.XXXXXX")
+
+tar --zstd -xf \
+    "$ROOT/radar_input_archives/${SCENE}.tar.zst" \
+    -C "$STAGE"
+
+tar --zstd -xf \
+    "$ROOT/camera_input_archives/${SCENE}.tar.zst" \
+    -C "$STAGE"
+
+ln -s "$BASE/samples" "$STAGE/samples"
+ln -s "$BASE/v1.2-trainval" "$STAGE/v1.2-trainval"
+
+echo "Staged dataset: $STAGE"
+)
+\end{lstlisting}
+
+The temporary dataset root contains:
+\begin{itemize}
+    \item \texttt{samples/}: a symlink to existing keyframe files;
+    \item \texttt{sweeps/}: extracted radar PCDs and camera images;
+    \item \texttt{v1.2-trainval/}: a symlink to dataset metadata.
+\end{itemize}
+
+The adapter's \texttt{dataset\_dir} is set to this temporary root.
+Selected \texttt{sample\_data["filename"]} values then resolve
+directly to the corresponding staged or linked files.
+
+The HDF5 runner implements staging in its
+\texttt{staged\_scene()} context manager. It requires a new scene
+directory, extracts both archives, rejects archive links and
+unexpected paths, and creates the permanent-data symlinks only after
+extraction. Its cleanup removes the owned staging directory without
+following those symlinks. A forced process termination can leave
+temporary files behind.
+
+The configuration supplies separate archive roots:
+\begin{lstlisting}[language={}]
+archive_root: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/radar_input_archives
+camera_archive_root: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/camera_input_archives
+\end{lstlisting}
+
+Before loading the foundation models, the HDF5 runner checks every
+required camera image for existence, successful decoding with
+\texttt{cv2.imread()}, and agreement with the image dimensions in
+the metadata. Paths are deduplicated, and the final frame used only
+as $t_1$ is included. The existing checks for radar-file availability
+and legacy radar-map comparisons are also retained.
+
+\paragraph{Validation status.}
+
+The original radar staging approach was validated with
+\texttt{jsc\_jupiter/create\_radar\_maps\_smoke.py},
+\texttt{jsc\_jupiter/truckscenes\_radar\_maps\_smoke.yaml}, and
+\texttt{jsc\_jupiter/radar\_staged\_smoke.sbatch} on scene
+\texttt{018a60086f5e441fb09f476e55948b72}. All 195 radar frames were
+successfully preprocessed.
+
+That radar-only validation did not test the camera sweep inputs.
+The subsequent HDF5 attempt failed while loading the first pair's
+$t_1$ camera image because the required camera sweeps had not yet
+been supplied.
+
+Camera archives have now been prepared for all 480 scenes, and
+the HDF5 runner has been extended to extract and check them.
+For the smoke scene, the 195 frames contain 780 unique images
+across four cameras: 157 keyframe images and 623 sweep images.
+These frames provide 194 consecutive pairs for conditioning and
+HDF5 generation.
+
+At the time of this update, the modified runner passed a Python
+syntax check, and all 480 camera archives were present at the JSC
+destination. During work package 1, an existing smoke output,
+\texttt{sample\_000049.h5}, was read successfully and its provenance
+confirmed \texttt{v1.2-trainval}, the training split, and the configured
+spatial and mark-normalization bounds, including camera frequency
+\texttt{10.0}. This single-sample check does not establish scene or
+full-dataset completion; verify the success records and exact inventory
+before making completion claims. The Phase 1 smoke runner remains
+restricted to one scene; separate full-data runners also exist.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Exploratory Data Analysis}
+
+Two small EDA scripts were used to inspect the raw TruckScenes representation and the radar maps produced by RadarGen. Both use the smoke-test scene
+\texttt{018a60086f5e441fb09f476e55948b72} containing 195 frames.
+
+\paragraph{Raw scene EDA.}
+The script
+\begin{lstlisting}
+jsc_jupiter/radargen_scene_eda.py
+\end{lstlisting}
+loads the staged scene through the RadarGen TruckScenes adapter and visualizes a representative camera frame, the corresponding fused radar point cloud, its RCS and relative velocity, and scene-level point-count statistics.
+
+The script can be modified and rerun from
+\begin{lstlisting}[language=bash]
+cd /e/project1/nxtaim-1/huber7/repos/RadarGen
+source jsc_jupiter/activate_jupiter.sh
+python jsc_jupiter/radargen_scene_eda.py
+\end{lstlisting}
+
+Its outputs are stored in
+\begin{lstlisting}
+/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/eda/
+018a60086f5e441fb09f476e55948b72/
+\end{lstlisting}
+
+The scene contains on average $2952.4$ fused radar detections per frame, with a median of $2647$ and a range from $2113$ to $4145$. Frame 100 contains $2330$ detections; its RCS values have a mean of approximately $-8.60$ and range from $-20$ to $43$.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.48\textwidth]{preprocess_eda/camera_CAMERA_LEFT_FRONT_frame_0100.jpg}
+    \includegraphics[width=0.48\textwidth]{preprocess_eda/radar_bev_frame_0100.png}
+    \caption{Front camera image and fused radar point cloud for frame 100.}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.48\textwidth]{preprocess_eda/radar_bev_rcs_frame_0100.png}
+    \includegraphics[width=0.48\textwidth]{preprocess_eda/radar_bev_vrelx_frame_0100.png}
+    \caption{Radar detections colored by RCS and relative velocity for frame 100.}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.48\textwidth]{preprocess_eda/rcs_hist_frame_0100.png}
+    \includegraphics[width=0.48\textwidth]{preprocess_eda/vrelx_hist_frame_0100.png}
+    \caption{RCS and relative-velocity distributions for frame 100.}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.48\textwidth]{preprocess_eda/scene_point_count_over_time.png}
+    \includegraphics[width=0.48\textwidth]{preprocess_eda/scene_point_count_hist.png}
+    \caption{Radar point count over the scene and its distribution.}
+\end{figure}
+
+
+\paragraph{Radar-map EDA.}
+The script
+\begin{lstlisting}
+jsc_jupiter/radargen_radar_maps_eda.py
+\end{lstlisting}
+inspects the three preprocessed RadarGen targets:
+\texttt{radar\_pd\_map}, \texttt{radar\_rcs\_map}, and
+\texttt{radar\_doppler\_map}, and compares them with the corresponding raw radar detections.
+
+It can be rerun with
+\begin{lstlisting}[language=bash]
+cd /e/project1/nxtaim-1/huber7/repos/RadarGen
+source jsc_jupiter/activate_jupiter.sh
+python jsc_jupiter/radargen_radar_maps_eda.py
+\end{lstlisting}
+
+The preprocessed inputs are located at
+\begin{lstlisting}
+/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/
+preprocessing/smoke/radar_maps/
+\end{lstlisting}
+and the EDA outputs at
+\begin{lstlisting}
+/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/
+eda_radar_maps/018a60086f5e441fb09f476e55948b72/
+\end{lstlisting}
+
+The preprocessing produced $585$ NumPy files, corresponding to $195$ frames for each of the three modalities. Each target is stored as a $512\times512$ array: point density and RCS use \texttt{float32}, while Doppler uses \texttt{float64}. In contrast to the sparse raw detections, the RCS and Doppler representations are dense spatial fields; inspected Doppler maps reached values of approximately $-62$ to $49\,\mathrm{m/s}$.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.32\textwidth]{preprocess_eda/raw_radar_bev_frame_0100.png}
+    \includegraphics[width=0.32\textwidth]{preprocess_eda/radar_pd_map_frame_0100.png}
+    \includegraphics[width=0.32\textwidth]{preprocess_eda/radar_rcs_map_frame_0100.png}
+    \caption{Raw radar detections, point-density map, and RCS map for frame 100.}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.48\textwidth]{preprocess_eda/raw_radar_vrelx_frame_0100.png}
+    \includegraphics[width=0.48\textwidth]{preprocess_eda/radar_doppler_map_frame_0100.png}
+    \caption{Raw relative-velocity detections and the corresponding dense Doppler map for frame 100.}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.32\textwidth]{preprocess_eda/radar_pd_map_hist.png}
+    \includegraphics[width=0.32\textwidth]{preprocess_eda/radar_rcs_map_hist.png}
+    \includegraphics[width=0.32\textwidth]{preprocess_eda/radar_doppler_map_hist.png}
+    \caption{Pixel-value distributions of the three RadarGen radar representations.}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.32\textwidth]{preprocess_eda/radar_pd_map_frame_means.png}
+    \includegraphics[width=0.32\textwidth]{preprocess_eda/radar_rcs_map_frame_means.png}
+    \includegraphics[width=0.32\textwidth]{preprocess_eda/radar_doppler_map_frame_means.png}
+    \caption{Per-frame means of the three radar-map modalities.}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.32\textwidth]{preprocess_eda/radar_pd_map_frame_stds.png}
+    \includegraphics[width=0.32\textwidth]{preprocess_eda/radar_rcs_map_frame_stds.png}
+    \includegraphics[width=0.32\textwidth]{preprocess_eda/radar_doppler_map_frame_stds.png}
+    \caption{Per-frame standard deviations of the three radar-map modalities.}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.48\textwidth]{preprocess_eda/raw_point_counts_over_time.png}
+    \includegraphics[width=0.48\textwidth]{preprocess_eda/raw_point_count_hist.png}
+    \caption{Raw radar point count over the scene and its distribution.}
+\end{figure}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Visual inspection of HDF5 samples}
+
+An inline Python script was executed in \texttt{env\_radargen\_jupiter} to inspect frame 100 of scene \texttt{018a60086f5e441fb09f476e55948b72}. Using \texttt{h5py}, NumPy, and Matplotlib with the non-interactive \texttt{Agg} backend, the script read \texttt{sample\_000100.h5} directly, without rerunning preprocessing or modifying the stored data. It printed the shapes, data types, finite-value counts, and ranges of the radar maps and generated three figures: the six BEV maps, the four camera depth maps, and the PPP detections colored by RCS and Doppler.
+
+All radar-map values were finite. The figures passed an initial visual inspection. Raster maps were displayed in their stored pixel orientation, while PPP detections were plotted in metric vehicle flat-up coordinates. The depth plots used a shared scale based on the first and 99th percentiles of valid positive depths; this affected visualization only.
+
+The PNG files were saved in the following directory:
+\begin{lstlisting}[language={}]
+/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/smoke/hdf5_visualization/018a60086f5e441fb09f476e55948b72/
+\end{lstlisting}
+
+% Upload the three PNG files to the preprocess_eda/ folder in Overleaf.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{preprocess_eda/frame_000100_bev.png}
+    \caption{Frame 100: BEV appearance, semantic, and velocity conditioning images (top), and numerical radar point-density, RCS, and Doppler maps (bottom).}
+    \label{fig:hdf5_bev}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{preprocess_eda/frame_000100_depth.png}
+    \caption{Frame 100: native camera-Z depth estimates at $t_0$ for the four cameras, displayed with a shared color scale in metres.}
+    \label{fig:hdf5_depth}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{preprocess_eda/frame_000100_ppp.png}
+    \caption{Frame 100: stored PPP target detections in vehicle flat-up coordinates, shown without mark coloring (left), colored by RCS (centre), and colored by Doppler (right). These detections are retained before pixel deduplication.}
+    \label{fig:hdf5_ppp}
+\end{figure}
+
+\subsection{Full-dataset HDF5 preprocessing}
+
+The preprocessing job is submitted from the RadarGen repository root using:
+\begin{verbatim}
+sbatch jsc_jupiter/hdf5_4nodes.sbatch
+\end{verbatim}
+The batch script activates the environment and launches 16 instances of
+\texttt{jsc\_jupiter/hdf5\_4nodes\_worker.py} across four JUPITER nodes,
+with one GPU per worker. Each worker processes 30 of the 480 illuminated
+scenes using \texttt{hdf5\_4nodes\_runner.py}.
+
+The expected output comprises 93,035 HDF5 samples stored under:
+\begin{verbatim}
+/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/
+    preprocessing/full/hdf5_samples/<scene_token>/
+\end{verbatim}
+Each scene directory contains consecutively numbered
+\texttt{sample\_XXXXXX.h5} files and a \texttt{\_SUCCESS.json} marker.
+Scenes are published after completeness and validation checks.
+On restart, completed scenes are validated before being skipped.
+
+Per-worker logs are written to:
+\begin{verbatim}
+jsc_jupiter/hdf5_full_<job_id>_worker_<rank>.out
+jsc_jupiter/hdf5_full_<job_id>_worker_<rank>.err
+\end{verbatim}
+The estimated runtime is approximately nine hours, with a twelve-hour
+walltime limit.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Main Repo Implementation}
+
+\paragraph{Scope and evidence.}
+This revision uses the supplied HDF5 inventory and preprocessing description as the storage contract. Repository behavior described in the original roadmap refers to its earlier public-repository inspection; it has not been reverified against the modified JUPITER checkout in this documentation update. Before implementation, inspect the local code and resolve differences explicitly. Proposed PPP components below are implementation requirements, not claims that they already exist.
+
+\paragraph{Implementation sequence.}
+The numbered subsections organize topics, not implementation order. Preserve the original RadarGen training path and implement the following work packages in order. Add component checks as each package is implemented.
+\begin{center}
+\begin{tabular}{p{0.06\linewidth}p{0.65\linewidth}p{0.19\linewidth}}
+\hline
+Order & Work package & Subsections \\
+\hline
+1 & Separate PPP configuration and training-entry-point skeleton & 23; setup from 5 \\
+2 & Derive sparse targets from existing HDF5 detections; implement loader & 1--4 \\
+3 & PPP and mark losses with synthetic value and gradient checks & 20 \\
+4 & DiT, modality organization, decoder, pretrained initialization & 12--15, 17--19, 24 \\
+5 & Training forward pass, losses, optimizer, checkpoints & 5--11, 16, 21--22 \\
+6 & Direct inference and PPP sampling & 25--26 \\
+7 & RadarGen evaluation and analytical PPP count metrics & 27 \\
+8 & End-to-end smoke test and staged training experiments & 28 \\
+\hline
+\end{tabular}
+\end{center}
+The first package need not produce runnable training. Complete the entry point incrementally. Existing HDF5 preprocessing covers the storage portion of package 2; it does not establish correctness of the new dataset or rasterized PPP supervision. Start those checks on smoke samples. Do not regenerate the full dataset merely to change the loader.
+
+\paragraph{Proportionate verification.}
+The checks described below specify what should be verified,
+not a requirement to run a separate test after every change.
+Related checks should be combined at meaningful implementation
+milestones. Intermediate checks may be deferred or omitted when
+the same property is already covered by a completed check or
+will be verified at the next milestone before it is relied upon.
+Repeat successful checks only when subsequent changes could
+invalidate their results.
+
+Prefer inexpensive configuration checks and small synthetic
+examples during development. Use existing smoke samples for
+dataset and target verification, and reserve GPU execution for
+the connected model and training path. Do not repeat full
+preprocessing, scan the entire dataset, or launch training
+merely to validate a minor edit.
+
+Before full training, establish correctness of coordinates,
+collision handling, conditioning normalization, losses,
+gradient flow, and checkpoint restoration, and complete the
+end-to-end smoke test. Report which checks were performed,
+which were deferred or omitted, and any remaining uncertainty.
+
+\subsection{Keep the BEV conditioning preprocessing}
+
+\paragraph{Existing representation to retain.}
+Retain the appearance, semantic, and velocity BEV calculations and use the existing arrays under \texttt{conditioning/}. Storage consolidation does not change model inputs. The loader maps
+\begin{center}
+\begin{tabular}{ll}
+\hline
+HDF5 dataset & Training batch key \\
+\hline
+\texttt{conditioning/appearance} & \texttt{bev\_color\_map} \\
+\texttt{conditioning/semantics} & \texttt{bev\_seg\_map} \\
+\texttt{conditioning/velocity} & \texttt{bev\_velocity\_map} \\
+\hline
+\end{tabular}
+\end{center}
+Preserve the conditioning order appearance, semantics, velocity, independently of the output modality order density, RCS, Doppler. The stored condition arrays have shape \((512,512,3)\) and dtype \texttt{uint8}. Preserve channel order and orientation; do not apply an extra BGR/RGB conversion, transpose of the spatial axes, or vertical flip without evidence from the baseline loading path.
+
+\paragraph{Velocity representation.}
+\texttt{conditioning/velocity} is a three-channel velocity visualization, not a scalar velocity field in metres per second. The inspected smoke statistics show 249 distinct RGB triplets; the most frequent triplets are grayscale. This does not establish that every triplet is grayscale or establish the physical mapping. In particular, neither black nor \([127,127,127]\) may be interpreted as zero physical velocity until the producing code is checked. Do not invert this visualization to obtain PPP Doppler targets; use \texttt{ppp\_targets/doppler}.
+
+\paragraph{Transformation and verification.}
+Inspect \texttt{radargen/training/radargen\_dataset.py}, especially \texttt{\_load\_bev\_maps()} and \texttt{\_apply\_transform()}, and the configured \texttt{default\_train\_from\_np} path. Match the complete baseline conversion from stored arrays to training tensors, including range conversion, tensor conversion, resize, crop, and normalization, exactly once. Do not add an unconditional division by 255 ahead of a transform that already performs it. Compare all three transformed tensors for the same scene and frame against the legacy loader, with identical deterministic transform settings. Require matching shapes, dtypes, orientation, ranges, and values within floating-point tolerance.
+
+\subsection{Derive PPP targets from the existing exact detections}
+
+\paragraph{Authoritative source.}
+Use \texttt{ppp\_targets/xy}, \texttt{ppp\_targets/rcs}, and \texttt{ppp\_targets/doppler}. These contain detections after camera-frustum and strict square-range filtering, but before rasterization and pixel deduplication. Coordinates are metres in RadarGen's vehicle flat-up frame, RCS is in dBsm, and Doppler is in metres per second with the existing RadarGen definition. All arrays share detection order and length \(N\).
+
+The stored \texttt{radargen\_targets/} maps retain the original Gaussian density and interpolated mark-map calculations for baseline use. They are not the PPP supervision source. Equality with legacy radar NumPy maps was reported for smoke frames 0, 50, and 100; that check does not establish transformed conditioning equivalence or full-run completeness.
+
+\paragraph{Target-construction module.}
+Create a small CPU target-construction module, for example
+\begin{lstlisting}
+radargen/ppp_targets/
+    __init__.py
+    creator.py
+\end{lstlisting}
+with an interface such as
+\begin{lstlisting}[language=Python]
+def create_ppp_targets_from_detections(
+    xy, rcs, doppler, *, image_size, point_limit,
+):
+    # Validate aligned lengths, finite values, units/range contract.
+    # Apply the two-stage collision policy from subsection 3.
+    ...
+    return point_mask, rcs_target, doppler_target, stats
+\end{lstlisting}
+Call it from the dataset after reading the arrays. It must not reload radar files, repeat frustum filtering, regenerate BEV maps, or infer detections from the legacy dense maps. Do not create the previously proposed duplicate HDF5 writer, \texttt{create\_ppp\_training\_data.py}, or its preprocessing configuration for this milestone.
+
+\paragraph{Existing preprocessing implementation.}
+Keep the existing writer and launch infrastructure:
+\begin{lstlisting}
+jsc_jupiter/hdf5_samples.py
+jsc_jupiter/hdf5_4nodes_runner.py
+jsc_jupiter/hdf5_4nodes_worker.py
+jsc_jupiter/truckscenes_hdf5_smoke.yaml
+jsc_jupiter/hdf5_4nodes.sbatch
+\end{lstlisting}
+The reported production launch runs 16 workers on four JUPITER nodes, one GPU per worker and 30 scenes per worker. The target inventory is 480 illuminated scenes, comprising 431 training and 49 validation scenes, 93,515 camera-frequency frames, and 93,035 consecutive-frame pairs. These are the adapter's illuminated subset, not the whole dataset. Expected counts and submitted jobs are not proof of completion; verify the exact scene and sample inventories and success records separately.
+
+\paragraph{Metadata and failure policy.}
+Require compatible schema and filtering-policy metadata, aligned finite arrays of shapes \((N,2)\), \((N,)\), \((N,)\), and coordinates inside the documented strict square. Validate \texttt{point\_limit} and \texttt{conditioning\_coordinate\_range} against the requested training geometry; do not silently refilter or rescale mismatches. Log empty detection arrays and count their occurrence before enabling a training policy for them. The mathematical loss can support an empty target, but the initial implementation must not silently skip samples or introduce a fallback sample. Keep the original roadmap's explicit empty-frame policy decision.
+
+\subsection{Construct the fixed-size PPP ground-truth maps}
+
+\paragraph{Derived training representation.}
+Construct zero-initialized arrays
+\[
+ M=\texttt{point\_mask}\in\{0,1\}^{H\times W},\qquad
+ r=\texttt{rcs\_target}\in\mathbb R^{H\times W},\qquad
+ d=\texttt{doppler\_target}\in\mathbb R^{H\times W},
+\]
+initially with \(H=W=512\). These are derived in memory; they are not datasets in the existing HDF5 files. Preserve the source detections and their multiplicities on disk.
+
+\paragraph{Coordinates.}
+For metric coordinates \((x,y)\) and square half-range \(R\), use
+\[
+ u=\frac{x+R}{2R}W,\qquad v=\frac{y+R}{2R}H,\qquad
+ c=\lfloor u\rfloor,\qquad r_{\mathrm{row}}=H-1-\lfloor v\rfloor.
+\]
+This follows the roadmap's physical-coordinate convention. Verify it against the local normalization helper and baseline geometry before use. Require \(0\le c<W\) and \(0\le r_{\mathrm{row}}<H\); reject unexpected out-of-range values instead of clipping them. Only the target rasterization flips the physical \(y\) axis into image rows; do not flip the stored condition images again.
+
+\paragraph{Retain the roadmap's two-stage collision policy.}
+Storage of exact detections does not by itself change the intended binary-target model. Preserve these stages explicitly:
+\begin{enumerate}[label=\arabic*.]
+ \item Group by rounded continuous image coordinates using the baseline \texttt{deduplicate\_by\_pixel()} rule, retaining the highest-RCS detection per group.
+ \item For the surviving detections, compute the final floor-based column and flipped row above. Resolve additional collisions in these final cells by retaining the highest-RCS detection.
+\end{enumerate}
+Use both marks from the same selected detection. Resolve equal-RCS ties deterministically by original HDF5 detection index, and test the baseline helper's tie behavior before claiming exact equivalence. Preserve the continuous coordinates of the retained detections for the second stage.
+
+The stored arrays are not the original multi-column radar matrix. In particular, do not pass an \((N,4)\) array directly to a helper that reads RCS from column 6. Inspect the helper and either adapt its required input layout explicitly or implement and regression-test its index-selection rule on the separate arrays. Reuse verified helpers where their interfaces fit; never invent unused radar components and treat them as physical data.
+
+\paragraph{Sparse assignment and units.}
+For selected original detection index \(i\), assign
+\begin{lstlisting}[language=Python]
+point_mask[row, col] = 1
+rcs_target[row, col] = rcs[i]
+doppler_target[row, col] = doppler[i]
+\end{lstlisting}
+Return floating-point targets in physical units, with marks supervised only where the mask is one. Do not use Gaussian smoothing, Voronoi interpolation, RGB replication, min--max image scaling, or image-range clipping. Zero-valued RCS or Doppler is a valid mark, not missing data.
+
+\paragraph{Statistical consequence.}
+Binary collision handling removes detection multiplicity from training supervision. The loss therefore fits the deduplicated representation, whereas evaluation counts refer to the continuous filtered detections. This is an inherited modeling choice, not an HDF5 requirement. Log its count reduction. A count-valued target retaining every event would require a separate revision of the loss and mark-supervision contract; do not introduce it silently.
+
+\paragraph{Statistics and checks.}
+Report the stored detection count, count after rounded-coordinate deduplication, additional final-cell collisions, and active-cell count. Require
+\[
+ \sum_{r,c}M_{rc}=N_{\mathrm{final\ cells}}\le N_{\mathrm{stored}}.
+\]
+Do not claim that pre-frustum or pre-range counts can be recovered from these filtered arrays; use preprocessing logs if those counts are needed. Test both collision stages, equal-RCS ties, mark-pair consistency, boundary points, and empty arrays according to the declared policy.
+
+\paragraph{Coordinate round trip.}
+Before connecting training, test real retained detections and synthetic points with both signs of \(x\) and \(y\). Invert indices using subsection~26 and require reconstruction at the cell center within half a cell width per coordinate, allowing numerical tolerance. Test points away from collisions separately so collision removal cannot hide an orientation error.
+
+\subsection{Load the existing per-sample HDF5 files}
+
+\paragraph{Paths and sample identity.}
+The production root is
+\begin{lstlisting}
+/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples/
+\end{lstlisting}
+and the smoke root is
+\begin{lstlisting}
+/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/smoke/hdf5_samples/
+\end{lstlisting}
+Each root uses
+\begin{lstlisting}
+<scene_token>/
+    sample_000000.h5
+    sample_000001.h5
+    ...
+    _SUCCESS.json
+\end{lstlisting}
+One HDF5 file represents consecutive adapter frames \(t_0,t_1\). The final scene frame is used as \(t_1\), but is not a separate training sample. Do not drop the last HDF5 pair again. \texttt{\_SUCCESS.json} is a scene completion record, not a training sample.
+
+\paragraph{Complete supplied HDF5 schema.}
+The following are internal HDF5 groups and datasets, not separate files. Shapes for depth below were observed in the smoke scene; read actual dataset shapes and applicable metadata instead of hardcoding them. Metadata shapes and dtypes were not supplied and are not inferred here.
+\begin{lstlisting}
+conditioning/
+  appearance                 (512, 512, 3) uint8
+  semantics                  (512, 512, 3) uint8
+  velocity                   (512, 512, 3) uint8
+  depth/
+    CAMERA_RIGHT_FRONT       (943, 1980) float32
+    CAMERA_LEFT_FRONT        (943, 1980) float32
+    CAMERA_RIGHT_BACK        (943, 1980) float32
+    CAMERA_LEFT_BACK          (943, 1980) float32
+
+radargen_targets/
+  point_density              (512, 512) float32
+  rcs                        (512, 512) float32
+  doppler                    (512, 512) float64
+
+ppp_targets/
+  xy                         (N, 2) float32
+  rcs                        (N,) float32
+  doppler                    (N,) float32
+
+metadata/
+  scene_token
+  frame_index
+  schema_version
+  ppp_filtering_policy
+  sample_token
+  split
+  dataset_version
+  reference_sensor
+  reference_sample_data_token
+  reference_timestamp_us
+  reference_is_key_frame
+  camera_names
+  radar_names
+  camera_intrinsics
+  camera_to_reference
+  reference_to_flat_up
+  global_to_flat_up
+  map_resolution
+  point_limit
+  conditioning_coordinate_range
+  nsweeps
+  sigma
+  frustum_camera_views
+  range_filter
+  normalization_json
+  configuration_json
+  annotation_policy
+  camera_t0_sample_data_tokens
+  camera_t0_timestamps_us
+  camera_t0_sample_tokens
+  camera_t1_sample_data_tokens
+  camera_t1_timestamps_us
+  camera_t1_sample_tokens
+  radar_t0_sample_data_tokens
+  radar_t0_timestamps_us
+  radar_t0_sample_tokens
+  bounding_boxes/
+    source_sample_token
+    source_timestamp_us
+    center_global
+    size_wlh
+    rotation_wxyz
+    raw_annotations_json
+    attribute_tokens
+    category_name
+    annotation_token
+    instance_token
+    visibility_token
+    previous_sample_token
+    previous_annotations_json
+    previous_timestamp_us
+\end{lstlisting}
+
+\paragraph{Physical and temporal meaning.}
+Native depth is camera \(Z\)-depth in metres at \(t_0\), not BEV depth or Euclidean camera range. Radar targets also correspond to \(t_0\); conditioning uses \(t_1\) for motion estimation. All named timestamps are in microseconds. Keep the individual sensor timestamps rather than assuming simultaneous acquisition. Original camera images and raw radar files are not embedded.
+
+Bounding boxes are original global annotations from the reference sensor record's parent sample. They are neither interpolated to camera frequency nor visibility-filtered during serialization. Previous annotation sources are retained without interpolation. Their presence does not justify substituting them for the evaluator's annotation path without a temporal and coordinate-equivalence check.
+
+Reported preprocessing settings are dataset version \texttt{v1.2-trainval}, map resolution 512, point limit 50 metres, \texttt{nsweeps=1}, and legacy radar-map \texttt{sigma=2.0}. Sigma remains relevant to the stored baseline density map; it is not a PPP rasterization parameter.
+
+\paragraph{Which data training consumes.}
+PPP training reads the three conditioning images, the three exact-detection arrays, and the metadata needed for indexing and validation. It derives the three scalar supervision grids in memory. Standard RadarGen training instead consumes the same three conditions and the three \texttt{radargen\_targets/} maps through its original target-conversion path. Neither path requires feeding native depth, calibration, annotations, or temporal identifiers into the model merely because they are present. These remain available for validation, diagnostics, evaluation, and future extensions. Do not eagerly read unused depth or annotation arrays on every training access.
+
+\paragraph{New dataset and registration.}
+Preserve \texttt{RadarGenDataset}. Create
+\begin{lstlisting}
+radargen/training/radargen_ppp_dataset.py
+    RadarGenPPPDataset
+    build_radargen_ppp_dataset_from_config
+
+diffusion/data/datasets/radargen_ppp_wrapper.py
+    RadarGenPPPDatasetWrapper
+\end{lstlisting}
+Register the wrapper in the same registry as the baseline and import it in \texttt{diffusion/data/datasets/\_\_init\_\_.py}. Preserve the baseline \texttt{data\_info} contract and inspect actual local interfaces before coding.
+
+\paragraph{Index, split, and completion checks.}
+Build a deterministic pair index aligned to the existing adapter's scene selection and frame order. Cross-check HDF5 scene token, frame index, split, dataset version, and temporal identities against this index. Use the recorded scene splits; do not randomly split neighboring pairs across train and validation. Decode HDF5 strings explicitly before comparisons.
+
+Inspect the actual \texttt{\_SUCCESS.json} schema and validate its processing signature, expected frame/pair counts, and exact file inventory. Missing scenes, incomplete scenes, extra samples, and metadata mismatches must be reported rather than silently accepted or skipped. For a full run, compare to the exact adapter inventory, not only to the aggregate 93,035 count. For a smoke run, explicitly select its smaller scene subset. Do not construct a training index against directories still being published.
+
+Publication and restart validation reportedly check shapes, dtypes, finite values, camera coverage, PPP lengths, and temporal metadata against the adapter. Reuse these validation routines where appropriate; their existence alone does not prove this particular full run completed successfully.
+
+\paragraph{Worker-safe HDF5 access.}
+Keep paths and lightweight index metadata in the dataset object, not live HDF5 handles. Open each file read-only inside \texttt{\_\_getitem\_\_}, materialize the required arrays, and close it before returning:
+\begin{lstlisting}[language=Python]
+with h5py.File(path, "r") as f:
+    appearance = f["conditioning/appearance"][...]
+    semantics = f["conditioning/semantics"][...]
+    velocity = f["conditioning/velocity"][...]
+    xy = f["ppp_targets/xy"][...]
+    rcs = f["ppp_targets/rcs"][...]
+    doppler = f["ppp_targets/doppler"][...]
+    # Read and decode required metadata while the file is open.
+# Transform conditions and construct targets from in-memory arrays.
+\end{lstlisting}
+Do not share handles across forked workers, pickle handles under spawn, or return \texttt{h5py.Dataset} objects. Keep CUDA work out of workers. Use immutable completed files; neither SWMR mode nor disabling HDF5 locking is required by this design. If later profiling motivates a handle cache, it must be per-process, bounded, and explicitly closed. Begin with context-managed per-item opens.
+
+\paragraph{Batch and normalization contract.}
+Return the three condition tensors with shape \((3,H,W)\) and each derived target with shape \((1,H,W)\). Use float32 for the initial mask and mark tensors; retain physical mark units. Keep variable-length detection arrays out of the ordinary fixed-shape training batch. If diagnostics or evaluation return them, use an explicit list-based or padded collate function with lengths/validity, not default stacking. Preserve baseline collation of \texttt{data\_info}; do not return the entire HDF5 metadata tree as model input.
+
+Add a PPP-specific typed dictionary in \texttt{radargen/core/data\_types.py}:
+\begin{lstlisting}[language=Python]
+class PPPTrainingBatch(TypedDict, total=False):
+    point_mask: torch.Tensor
+    rcs_target: torch.Tensor
+    doppler_target: torch.Tensor
+    bev_color_map: torch.Tensor
+    bev_seg_map: torch.Tensor
+    bev_velocity_map: torch.Tensor
+    data_info: Dict[str, Any]
+\end{lstlisting}
+Read \texttt{normalization\_json} and \texttt{configuration\_json} as provenance to validate against the producer and baseline conversions; do not automatically apply every recorded normalization again. The legacy float64 Doppler map dtype is intentional in this supplied schema and is unrelated to the float32 PPP marks. Preserve its original conversion order if building a baseline HDF5 loader.
+
+\paragraph{Dependencies and storage.}
+Ensure \texttt{h5py} is declared in the maintained project/environment dependencies; inspect the modified checkout before adding a duplicate requirement. Read the existing files with their current compression settings. Repacking or compression benchmarking is a separate optimization and is not required for the loader change.
+
+\paragraph{Required verification.}
+On one or a few smoke samples, verify transformed-conditioning equivalence, derived target geometry, collision behavior, metadata consistency, and finite values. Compare deterministic outputs for \texttt{num\_workers=0} and multiple workers, including repeated epochs with persistent workers. Test default or explicit collation as appropriate. Report the limitations of any check for which the matching legacy source arrays are unavailable.
+
+\subsection{Change the training batch in \texttt{scripts/train\_ppp.py}}
+
+\paragraph{New entry point.}
+Preserve \texttt{scripts/train.py} as the RadarGen baseline. Create
+\begin{lstlisting}
+scripts/train_ppp.py
+\end{lstlisting}
+by copying the general initialization and training infrastructure from \texttt{scripts/train.py} and changing only the PPP-specific data and model path.
+
+\paragraph{Batch extraction.}
+Replace
+\begin{lstlisting}[language=Python]
+pd_map = batch["pd_map"]
+rcs_map = batch["rcs_map"]
+doppler_map = batch["doppler_map"]
+\end{lstlisting}
+with
+\begin{lstlisting}[language=Python]
+point_mask = batch["point_mask"]
+rcs_target = batch["rcs_target"]
+doppler_target = batch["doppler_target"]
+\end{lstlisting}
+and retain
+\begin{lstlisting}[language=Python]
+bev_color_map = batch["bev_color_map"]
+bev_seg_map = batch["bev_seg_map"]
+bev_vel_map = batch["bev_velocity_map"]
+data_info = batch["data_info"]
+\end{lstlisting}
+
+Move all tensors needed by the loss to the accelerator device using the same conventions as the existing dataloader and training code.
+
+\paragraph{Shape assertions.}
+During the first smoke tests, assert
+\begin{align*}
+\texttt{point\_mask.shape} &= (B,1,H,W),\\
+\texttt{rcs\_target.shape} &= (B,1,H,W),\\
+\texttt{doppler\_target.shape} &= (B,1,H,W).
+\end{align*}
+Also assert that the mask is binary and that all three target tensors are finite.
+
+\subsection{Remove the AE encoding of the radar targets}
+
+\paragraph{Code to remove from the PPP training path.}
+Do not create
+\begin{lstlisting}
+z_pd_map
+z_rcs_map
+z_doppler_map
+\end{lstlisting}
+in \texttt{scripts/train\_ppp.py}. Remove all calls to \texttt{vae\_encode()} whose inputs are the radar target maps.
+
+\paragraph{Code to retain.}
+Keep AE encoding for
+\begin{lstlisting}
+bev_color_map
+bev_seg_map
+bev_velocity_map
+\end{lstlisting}
+and continue to execute these three encoder calls under \texttt{torch.no\_grad()} and autocast because the AE encoder remains frozen.
+
+The resulting condition latents should each initially have shape
+\[
+    (B,32,16,16)
+\]
+for \(512\times512\) input and the configured \(32\times\) DC-AE downsampling. Do not hardcode \(16\). Compute the latent size from
+\[
+    \texttt{image\_size // vae\_downsample\_rate}.
+\]
+
+\paragraph{Verification.}
+For one batch, print or assert the three condition latent shapes before making any DiT changes. This establishes the exact channel count used by subsection~12.
+
+\subsection{Keep the conditioning dropout initially}
+
+\paragraph{Existing behavior to preserve.}
+RadarGen independently drops the three BEV conditions with probability \(0.1\):
+\begin{lstlisting}[language=Python]
+if random.random() < 0.1:
+    z_bev_color_map *= 0.0
+if random.random() < 0.1:
+    z_bev_seg_map *= 0.0
+if random.random() < 0.1:
+    z_bev_vel_map *= 0.0
+\end{lstlisting}
+
+Copy this behavior unchanged into \texttt{scripts/train\_ppp.py} after condition encoding and before the DiT forward call.
+
+\paragraph{Do not couple dropout to modality.}
+All three radar modalities for the same scene should receive the same already-dropped set of BEV conditions. Do not independently resample condition dropout for density, RCS, and Doppler instances.
+
+\paragraph{Future ablation.}
+Make the probability configurable later if desired, but use \(0.1\) in the first implementation so that this component matches RadarGen.
+
+\subsection{Replace the construction of \texttt{clean\_z} while preserving the modality organization}
+
+\paragraph{Important correction to the earlier high-level description.}
+Do not manually create an external modality-label tensor. The current RadarGen model already handles the modality dimension internally.
+
+In baseline training,
+\begin{lstlisting}[language=Python]
+clean_z = torch.stack([z_pd_map, z_rcs_map, z_doppler_map], dim=1)
+clean_z = rearrange(clean_z, "b v c h w -> (b v) c h w")
+\end{lstlisting}
+creates a batch ordered as density, RCS, Doppler. In \texttt{RadarGen.forward()}, this is reshaped back to \((B,V,C,H,W)\) with \(V=3\). The model then broadcasts one learned row of \texttt{modality\_pe} over each modality and later joins the modality tokens in \texttt{SanaMSBlock} self-attention.
+
+\paragraph{PPP replacement.}
+There is no \texttt{clean\_z}. Instead, the PPP-specific model should create the three modality streams from the conditioning latents alone.
+
+Given
+\[
+    z_c,z_s,z_v\in\mathbb R^{B\times32\times h\times w},
+\]
+first concatenate them:
+\[
+    z_{\mathrm{cond}}
+    =
+    \operatorname{cat}(z_c,z_s,z_v)
+    \in\mathbb R^{B\times96\times h\times w}.
+\]
+Repeat this tensor across the existing modality dimension:
+\[
+    z_{\mathrm{cond}}^{(3)}
+    \in
+    \mathbb R^{B\times3\times96\times h\times w}.
+\]
+Broadcast \texttt{modality\_pe}, whose shape is \(3\times3\), to
+\[
+    B\times3\times3\times h\times w
+\]
+and concatenate it to obtain
+\[
+    B\times3\times99\times h\times w.
+\]
+Finally rearrange to
+\[
+    (3B)\times99\times h\times w
+\]
+before calling the inherited \texttt{inner\_forward()}.
+
+\paragraph{Do not change \texttt{SanaMSBlock}.}
+The existing block already combines the three modality streams with
+\begin{lstlisting}
+(b v) n c -> b (v n) c
+\end{lstlisting}
+for self-attention and restores them afterward. This behavior should be retained unchanged.
+
+\subsection{Remove diffusion timestep sampling}
+
+\paragraph{Code to remove.}
+Remove from \texttt{scripts/train\_ppp.py}
+\begin{itemize}
+    \item the random \texttt{torch.randint(...)} timestep sampling,
+    \item \texttt{compute\_density\_for\_timestep\_sampling},
+    \item the import of that helper,
+    \item all weighting-scheme logic that exists solely to select diffusion timesteps.
+\end{itemize}
+
+\paragraph{Do not remove the internal timestep embedding yet.}
+The SANA/RadarGen transformer structurally uses a timestep embedding in \texttt{inner\_forward()}, \texttt{SanaMSBlock}, and \texttt{T2IFinalLayer}. The PPP training code therefore needs a fixed compatibility timestep as described in subsection~14. This is not diffusion timestep sampling.
+
+\subsection{Remove the training diffusion scheduler}
+
+\paragraph{Code to remove.}
+Do not construct
+\begin{lstlisting}[language=Python]
+train_diffusion = Scheduler(...)
+\end{lstlisting}
+in \texttt{scripts/train\_ppp.py}. Remove the \texttt{Scheduler} import and remove \texttt{train\_diffusion} from the training-function signature.
+
+Do not call
+\begin{lstlisting}
+train_diffusion.training_losses(...)
+\end{lstlisting}
+anywhere in the PPP training path.
+
+\paragraph{Configuration.}
+The current \texttt{SanaConfig} requires a \texttt{scheduler} dataclass subsection, so it is acceptable to retain the inherited scheduler block temporarily in the YAML even though its diffusion fields are unused. PPP-specific values should be placed in an existing \texttt{extra} dictionary rather than adding arbitrary top-level YAML keys that the dataclass does not define.
+
+A clean first implementation can use
+\begin{lstlisting}
+model:
+  extra:
+    num_maps: 3
+    num_conditions: 3
+    fixed_timestep: 0.0
+
+train:
+  extra:
+    ppp_weight: 1.0
+    rcs_weight: 1.0
+    doppler_weight: 1.0
+    normalize_ppp_by_gt_count: true
+    velocity_loss_mode: signed_l1
+\end{lstlisting}
+until a dedicated PPP config dataclass is introduced.
+
+\subsection{Remove diffusion-specific validation noise}
+
+\paragraph{Code to remove.}
+Do not construct the baseline
+\begin{lstlisting}[language=Python]
+validation_noise = torch.randn(...)
+\end{lstlisting}
+in \texttt{scripts/train\_ppp.py}. Remove it from global declarations and from any validation call that assumes sampling begins from Gaussian noise.
+
+\paragraph{PPP validation.}
+A validation forward pass should consist only of
+\[
+    \text{BEV maps}
+    \rightarrow
+    \text{AE encoder}
+    \rightarrow
+    \text{PPP DiT}
+    \rightarrow
+    \text{trainable decoder}
+    \rightarrow
+    \text{three scalar fields}.
+\]
+Stochasticity enters later when sampling a point cloud from the intensity, not by adding latent Gaussian noise.
+
+\subsection{Modify the DiT input while retaining the modality indicator}
+
+\paragraph{New model file.}
+Create
+\begin{lstlisting}
+diffusion/model/nets/radargen_ppp.py
+\end{lstlisting}
+with a class
+\begin{lstlisting}[language=Python]
+class RadarGenPPP(RadarGen):
+    ...
+\end{lstlisting}
+and register a factory such as
+\begin{lstlisting}[language=Python]
+@MODELS.register_module()
+def RadarGenPPP_600M_P1_D28(**kwargs):
+    return RadarGenPPP(
+        depth=28,
+        hidden_size=1152,
+        patch_size=1,
+        num_heads=16,
+        **kwargs,
+    )
+\end{lstlisting}
+
+Import the new factory from
+\begin{lstlisting}
+diffusion/model/nets/__init__.py
+\end{lstlisting}
+without changing the existing \texttt{RadarGen\_600M\_P1\_D28} registration.
+
+\paragraph{New input-inflation helper.}
+Add a second function to
+\begin{lstlisting}
+diffusion/model_modification.py
+\end{lstlisting}
+called, for example,
+\begin{lstlisting}[language=Python]
+def inflate_sana_input_channels_for_ppp(
+    model,
+    logger,
+    num_conditions: int = 3,
+):
+    ...
+\end{lstlisting}
+
+Do not modify \texttt{inflate\_sana\_input\_channels\_for\_radargen()}.
+
+The SANA base input projection has 32 latent channels. Baseline RadarGen repeats those weights four times, once for the noised radar latent and once for each of three conditions, then adds three modality-embedding channels. The PPP model needs only three condition copies plus the modality embedding.
+
+The new projection therefore has
+\[
+    3\cdot32+3=99
+\]
+input channels.
+
+Initialize it analogously to RadarGen:
+\begin{enumerate}[label=\arabic*.]
+    \item clone the pretrained SANA projection weight and bias,
+    \item repeat the 32 input-channel weights three times,
+    \item divide the repeated weights by \(3\),
+    \item create a new convolution with 99 input channels,
+    \item Xavier-initialize the full new weight tensor,
+    \item copy the 96 repeated pretrained channels into the first 96 input channels,
+    \item leave the final three modality-embedding channels at their Xavier initialization,
+    \item copy the pretrained bias,
+    \item replace \texttt{model.x\_embedder.proj}.
+\end{enumerate}
+
+\paragraph{Modality mechanism.}
+The modality mechanism is fully present in the current repository. \texttt{RadarGen.\_\_init\_\_()} defines
+\[
+    \text{\texttt{self.modality\_pe}}
+    \in\mathbb R^{3\times3}
+\]
+as a trainable parameter initialized from a normal distribution with standard deviation \(0.1\). \texttt{RadarGen.forward()} broadcasts this parameter spatially and concatenates it to each modality stream. Preserve that mechanism unchanged.
+
+\paragraph{Initialization order.}
+Build the PPP DiT with the original 32-channel SANA input shape, load the SANA checkpoint, and only then call \texttt{inflate\_sana\_input\_channels\_for\_ppp()}. This preserves the original RadarGen initialization strategy.
+
+\subsection{Adapt the DiT forward interface}
+
+\paragraph{New forward behavior.}
+Override \texttt{RadarGen.forward()} in \texttt{RadarGenPPP}. The new forward method must no longer require a noised radar latent as its spatial input.
+
+A recommended interface is
+\begin{lstlisting}[language=Python]
+def forward(
+    self,
+    timestep,
+    y,
+    mask=None,
+    data_info=None,
+    bev_condition_maps=None,
+    **kwargs,
+):
+    ...
+\end{lstlisting}
+This keeps the inherited SANA arguments recognizable while making the absence of a radar latent explicit.
+
+\paragraph{Forward pseudocode.}
+The implementation should be equivalent to
+\begin{lstlisting}[language=Python]
+conditions = torch.cat(bev_condition_maps, dim=1)       # [B, 96, h, w]
+B, _, h, w = conditions.shape
+
+x = conditions[:, None].repeat(1, self.num_maps, 1, 1, 1)
+# [B, 3, 96, h, w]
+
+modality = self.modality_pe[None, :, :, None, None]
+modality = modality.expand(B, -1, -1, h, w)
+# [B, 3, 3, h, w]
+
+x = torch.cat([x, modality], dim=2)
+# [B, 3, 99, h, w]
+
+x = rearrange(x, "b v c h w -> (b v) c h w")
+
+# y, mask, timestep must have compatible 3B batch dimensions.
+return self.inner_forward(
+    x,
+    timestep,
+    y,
+    mask=mask,
+    data_info=data_info,
+    **kwargs,
+)
+\end{lstlisting}
+
+\paragraph{Text and timestep batch dimensions.}
+The output batch size is \(3B\), so the empty text embedding, text mask, and fixed timestep must also be compatible with \(3B\). Follow the current baseline convention of creating the empty prompt for \(3B\) entries.
+
+\paragraph{Output.}
+The DiT output remains a latent tensor of shape
+\[
+    (3B,32,h,w)
+\]
+because the inherited final layer still predicts the configured AE latent channel count. Do not replace the DiT by three dedicated output heads.
+
+\subsection{Remove the diffusion timestep dependence from the model forward pass}
+
+\paragraph{What remains structurally necessary.}
+The current \texttt{RadarGen.inner\_forward()} uses the timestep embedding throughout the network:
+\begin{lstlisting}
+t = self.t_embedder(timestep)
+t0 = self.t_block(t)
+...
+block(..., t0, ...)
+...
+self.final_layer(x, t)
+\end{lstlisting}
+and \texttt{SanaMSBlock} uses this conditioning for adaptive modulation. Removing the timestep modules entirely would therefore alter every transformer block and the final layer and would throw away pretrained SANA behavior.
+
+\paragraph{Use a fixed clean-endpoint timestep.}
+For the first PPP implementation, retain the existing timestep-conditioning modules but always feed the model-visible value
+\[
+    t_{\mathrm{PPP}}=0.0.
+\]
+
+This value is determined by RadarGen's configured flow scheduler. The training configuration uses \texttt{noise\_schedule: linear\_flow}, \texttt{predict\_v: true}, and \texttt{flow\_shift: 3.0}. In the scheduler code, the linear-flow base schedule starts with \(\beta_0=1\), so the corresponding base flow noise level is
+\[
+    \sigma_0=1-\beta_0=0.
+\]
+The flow-shift transformation preserves zero, and \texttt{SpacedDiffusion} exposes the model timestep as the shifted \(\sigma\) multiplied by the number of diffusion steps. Therefore the first scheduler index maps to model-visible timestep \(0.0\). At this endpoint, the flow forward process
+\[
+    x_t=(1-\sigma_t)x_0+\sigma_t\epsilon
+\]
+reduces to \(x_t=x_0\).
+
+In the PPP model, \(t=0\) no longer represents a sampled diffusion state. It is a fixed compatibility embedding corresponding to the clean-data endpoint of the pretrained RadarGen/SANA timestep parameterization.
+
+\paragraph{Configuration.}
+Set
+\begin{lstlisting}
+model.extra.fixed_timestep: 0.0
+\end{lstlisting}
+and create
+\begin{lstlisting}[language=Python]
+timestep = torch.zeros(
+    3 * B,
+    device=device,
+    dtype=torch.float32,
+)
+\end{lstlisting}
+before the direct model forward. \texttt{RadarGen.inner\_forward()} casts the timestep to the model dtype internally.
+
+\paragraph{One-time verification test.}
+Even though the value is now determined from the released code, include a small regression test that instantiates the original RadarGen scheduler configuration and verifies that the first model-visible entry of its \texttt{timestep\_map} is numerically zero. This protects the PPP implementation if the inherited scheduler code is changed later.
+
+\paragraph{Do not do this.}
+Do not sample random timesteps and do not add diffusion noise merely to satisfy the inherited function signature. Random \(t\) would introduce a nuisance input with no corresponding diffusion target.
+
+\subsection{Retain the existing empty text conditioning unless it can be removed cleanly}
+
+\paragraph{Existing behavior.}
+RadarGen inherits the SANA text-conditioning interface and trains using an empty prompt. Keep this path unchanged initially.
+
+In \texttt{scripts/train\_ppp.py}, create
+\begin{lstlisting}[language=Python]
+prompt = [""] * (3 * B)
+\end{lstlisting}
+and obtain \texttt{y} and \texttt{y\_mask} using the same Gemma branch as the baseline training script.
+
+\paragraph{Reuse the existing null-embedding setup.}
+Keep the code that constructs or loads the null prompt embedding path. Do not remove the text encoder as part of the PPP conversion.
+
+\paragraph{Reason.}
+The text path is unrelated to the point-process objective. Removing it would create a second architectural intervention and could change the pretrained cross-attention behavior.
+
+\paragraph{Future cleanup.}
+After the PPP training path is stable, a separate ablation may replace the text encoder by a stored constant empty-prompt embedding. That should be treated as an optimization, not as part of the initial PPP implementation.
+
+\subsection{Replace \texttt{train\_diffusion.training\_losses(...)} with modality-conditioned model prediction}
+
+\paragraph{Training call.}
+Replace the baseline call to
+\begin{lstlisting}
+train_diffusion.training_losses(...)
+\end{lstlisting}
+with one direct call to the PPP model.
+
+The preferred organization is a single batched forward pass, not three Python-level forward calls, because RadarGen's transformer blocks explicitly mix the three modality streams in self-attention.
+
+Conceptually:
+\begin{lstlisting}[language=Python]
+pred_latents = model(
+    timestep=fixed_timestep_tensor,
+    y=y,
+    mask=y_mask,
+    data_info=data_info,
+    bev_condition_maps=[
+        z_bev_color_map,
+        z_bev_seg_map,
+        z_bev_vel_map,
+    ],
+)
+# pred_latents: [3B, 32, h, w]
+\end{lstlisting}
+
+\paragraph{Decode after prediction.}
+Pass all \(3B\) predicted latents through the trainable shared decoder in one batched call if memory permits:
+\begin{lstlisting}[language=Python]
+decoded = ppp_decoder(pred_latents)
+# [3B, 1, H, W]
+decoded = rearrange(
+    decoded,
+    "(b v) c h w -> b v c h w",
+    v=3,
+)
+\end{lstlisting}
+
+Then interpret
+\begin{align*}
+\texttt{decoded[:,0]} &\rightarrow f_\lambda,\\
+\texttt{decoded[:,1]} &\rightarrow q_{\mathrm{raw}}^{\mathrm{RCS}},\\
+\texttt{decoded[:,2]} &\rightarrow q_{\mathrm{raw}}^{\mathrm{Doppler}}.
+\end{align*}
+
+If decoding all \(3B\) latents simultaneously exceeds memory, decode the three modality slices sequentially. The numerical result should be identical in evaluation mode for a decoder without batch-dependent running statistics.
+
+\subsection{Preserve RadarGen's modality-conditioned organization}
+
+\paragraph{Do not create a new modality API.}
+The current implementation has no external integer modality argument. Modality identity is represented by
+\begin{enumerate}[label=\arabic*.]
+    \item a fixed modality-axis ordering \(V=3\),
+    \item the learned parameter \texttt{modality\_pe} with one row per modality,
+    \item joint self-attention over tokens from all three modalities in every \texttt{SanaMSBlock}.
+\end{enumerate}
+
+The PPP model must preserve all three mechanisms.
+
+\paragraph{Fixed ordering.}
+Use
+\[
+    [\mathrm{density},\mathrm{RCS},\mathrm{Doppler}]
+\]
+everywhere. Put this ordering in one module-level constant in \texttt{radargen\_ppp.py} or the training utilities so that reshaping, decoding, losses, and inference use the same definition.
+
+\paragraph{Loss dispatch.}
+After reshaping decoded outputs to \((B,3,1,H,W)\), select the appropriate loss by modality index rather than by constructing \(3B\) Python objects:
+\begin{lstlisting}[language=Python]
+f_lambda = decoded[:, 0]
+raw_rcs = decoded[:, 1]
+raw_doppler = decoded[:, 2]
+
+loss_ppp = ppp_loss(f_lambda, point_mask)
+loss_rcs = mark_loss.rcs(raw_rcs, rcs_target, point_mask)
+loss_doppler = mark_loss.doppler(
+    raw_doppler, doppler_target, point_mask, ...
+)
+\end{lstlisting}
+
+\paragraph{Loss weights.}
+Start the diagnostic run with
+\[
+    w_{\mathrm{PPP}}=
+    w_{\mathrm{RCS}}=
+    w_{\mathrm{Doppler}}=1.
+\]
+Log all three raw losses. After a short run of a few thousand updates, estimate a stable central magnitude for each loss and set weights so that their weighted contributions are approximately comparable.
+
+Do not require
+\[
+    w_{\mathrm{PPP}}+w_{\mathrm{RCS}}+w_{\mathrm{Doppler}}=1.
+\]
+
+\paragraph{Do not automate the final weight choice initially.}
+The first implementation should expose the weights as configuration values and select them after inspecting logs. Dynamic loss balancing can be studied separately.
+
+\subsection{Decode the modality-specific predicted radar latents during training and fine-tune the decoder}
+
+\paragraph{Critical gradient issue.}
+Do not use the existing \texttt{vae\_decode()} helper unchanged for training. In its DC-AE branch it calls
+\begin{lstlisting}
+ae.decode(latent.detach() / scaling_factor)
+\end{lstlisting}
+which cuts the gradient between the decoded PPP or mark loss and the DiT.
+
+\paragraph{New differentiable decoder adapter.}
+Create
+\begin{lstlisting}
+radargen/training/ppp_decoder.py
+\end{lstlisting}
+with a thin module such as
+\begin{lstlisting}[language=Python]
+class PPPDecoder(nn.Module):
+    def __init__(self, decoder: nn.Module, scaling_factor: float):
+        super().__init__()
+        self.decoder = decoder
+        self.scaling_factor = float(scaling_factor)
+
+    def forward(self, latent: torch.Tensor) -> torch.Tensor:
+        return self.decoder(latent / self.scaling_factor)
+\end{lstlisting}
+
+For the vendored DC-AE, \texttt{DCAE.decode(x)} forwards directly to \texttt{self.decoder(x)}, so calling the decoder this way preserves the relevant decode operation while removing the helper's \texttt{detach()}.
+
+Do not wrap this forward pass in \texttt{torch.no\_grad()}.
+
+\paragraph{AE construction and precision.}
+Load the pretrained DC-AE with the same checkpoint as RadarGen, but do not copy the baseline line that unconditionally converts the entire VAE to \texttt{torch.float16}. The baseline configuration itself specifies \texttt{vae.weight\_dtype: float32}, and the decoder is now trainable rather than a frozen feature extractor.
+
+For the first PPP implementation:
+\begin{enumerate}[label=\arabic*.]
+    \item load the full DC-AE on the accelerator device,
+    \item keep its parameters in FP32,
+    \item set \texttt{requires\_grad=False} for all AE parameters,
+    \item set \texttt{requires\_grad=True} for \texttt{vae.decoder.parameters()},
+    \item use the frozen \texttt{vae.encoder} for BEV condition encoding,
+    \item put the decoder inside \texttt{PPPDecoder}.
+\end{enumerate}
+
+The training script can still use the existing BF16 Accelerator autocast. This gives mixed-precision compute where supported while retaining FP32 trainable decoder parameters and optimizer state.
+
+\paragraph{Training versus evaluation mode.}
+The released SANA 1.1 DC-AE decoder uses RMS-style normalization rather than BatchNorm and does not rely on running batch statistics. Therefore it is acceptable for the decoder to follow the normal training wrapper's \texttt{train()} state during fine-tuning while the frozen encoder remains in evaluation mode.
+
+Before full training, run one equivalence probe on the instantiated checkpoint: decode the same fixed latent once with the decoder in \texttt{train()} mode and once in \texttt{eval()} mode under \texttt{torch.no\_grad()}. The outputs should agree to numerical precision. If they do not, inspect the differing layer before proceeding.
+
+\paragraph{Shared decoder.}
+Use the same decoder module for all three radar modalities. Given predicted latents
+\[
+    z_{\mathrm{pred}}
+    \in
+    \mathbb R^{3B\times32\times h\times w},
+\]
+decode them in one batch when memory permits:
+\[
+    3B\times32\times h\times w
+    \longrightarrow
+    3B\times1\times H\times W.
+\]
+If this is too memory intensive, split the \(3B\) latent tensor by modality and call the same decoder sequentially. Do not create three independent decoder parameter sets.
+
+\paragraph{Training wrapper.}
+The current optimizer and checkpoint helpers operate on a single \texttt{nn.Module}. Create
+\begin{lstlisting}
+radargen/training/radargen_ppp_training_model.py
+\end{lstlisting}
+with a wrapper such as
+\begin{lstlisting}[language=Python]
+class RadarGenPPPTrainingModel(nn.Module):
+    def __init__(self, dit, ppp_decoder):
+        super().__init__()
+        self.dit = dit
+        self.ppp_decoder = ppp_decoder
+
+    def forward(self, ...):
+        pred_latents = self.dit(...)
+        decoded = self.ppp_decoder(pred_latents)
+        return decoded
+\end{lstlisting}
+
+The frozen AE encoder should remain outside this wrapper. This keeps it out of the optimizer and out of PPP checkpoints.
+
+\paragraph{Construction order.}
+Do not wrap the model before SANA initialization. First build the bare PPP DiT, load the SANA checkpoint into that DiT, adapt its input projection, load and adapt the DC-AE decoder, and only then construct \texttt{RadarGenPPPTrainingModel}.
+
+\paragraph{Gradient checks.}
+The smoke test must confirm a continuous gradient path
+\[
+    L_{\mathrm{PPP/mark}}
+    \rightarrow
+    \mathrm{decoder}
+    \rightarrow
+    z_{\mathrm{pred}}
+    \rightarrow
+    \mathrm{DiT}.
+\]
+At least one early decoder parameter, the new final decoder convolution, \texttt{modality\_pe}, and a representative DiT block parameter must receive finite nonzero gradients. The frozen encoder must receive none.
+
+\subsection{Adapt the AE decoder to produce a single-channel output}
+
+\paragraph{Exact DC-AE location.}
+For the configured \texttt{dc-ae-f32c32-sana-1.1}, the decoder is \texttt{vae.decoder}. Its final projection is
+\begin{lstlisting}
+vae.decoder.project_out
+\end{lstlisting}
+which is an \texttt{OpSequential}. Because the SANA 1.1 decoder has nonzero first-stage depth, its last operation is a \texttt{ConvLayer}, and the underlying convolution is expected at
+\begin{lstlisting}
+vae.decoder.project_out.op_list[-1].conv
+\end{lstlisting}
+with three output channels.
+
+\paragraph{Runtime assertion before surgery.}
+Do not rely on the module path silently. Assert
+\begin{lstlisting}[language=Python]
+old_conv = vae.decoder.project_out.op_list[-1].conv
+assert isinstance(old_conv, nn.Conv2d)
+assert old_conv.out_channels == 3
+\end{lstlisting}
+and log its input channels, kernel size, stride, padding, dtype, and device.
+
+\paragraph{Replace the final convolution.}
+Create a new \texttt{nn.Conv2d} with the same
+\begin{itemize}
+    \item input channels,
+    \item kernel size,
+    \item stride,
+    \item padding,
+    \item dilation,
+    \item groups,
+    \item bias setting,
+\end{itemize}
+but with \texttt{out\_channels=1}.
+
+Initialize it from the RGB output layer:
+\begin{lstlisting}[language=Python]
+new_conv.weight.copy_(old_conv.weight.mean(dim=0, keepdim=True))
+if old_conv.bias is not None:
+    new_conv.bias.copy_(old_conv.bias.mean().view(1))
+\end{lstlisting}
+and replace
+\begin{lstlisting}
+vae.decoder.project_out.op_list[-1].conv
+\end{lstlisting}
+with the new convolution.
+
+\paragraph{Why averaging is appropriate.}
+RadarGen already decodes each scalar radar modality as three RGB-compatible channels and then averages the channels to recover one scalar map. Averaging the pretrained output filters gives the new one-channel decoder an initialization consistent with that operation.
+
+\paragraph{No image postprocessing in training.}
+Do not apply
+\begin{itemize}
+    \item multiplication by 127.5,
+    \item addition of 128,
+    \item clamping to \([0,255]\),
+    \item conversion to \texttt{uint8},
+    \item \texttt{decoded\_to\_pd\_map},
+    \item \texttt{decoded\_to\_rcs\_map},
+    \item \texttt{decoded\_to\_doppler\_map}
+\end{itemize}
+inside the PPP training path.
+
+The raw one-channel decoder output is interpreted as the raw physical-field parameter.
+
+\paragraph{Output-range check.}
+The DC-AE's final decoder block applies normalization and activation before the last convolution, but the last convolution itself has no activation. The raw output is therefore not structurally clamped to an RGB interval. Confirm this at runtime by feeding a small latent batch through the modified decoder and logging minimum, maximum, mean, and standard deviation.
+
+\subsection{Add the spatial PPP loss and the RCS and Doppler mark losses}
+
+\paragraph{New loss package.}
+Create
+\begin{lstlisting}
+radargen/losses/
+    __init__.py
+    ppp_loss.py
+    mark_losses.py
+\end{lstlisting}
+
+\paragraph{Spatial PPP loss.}
+Implement \texttt{PPPLoss} in \texttt{ppp\_loss.py} by porting the active uploaded implementation, not one of the older commented variants:
+\begin{lstlisting}[language=Python]
+class PPPLoss(nn.Module):
+    def __init__(
+        self,
+        out_img_size: tuple[int, int],
+        normalize_by_gt_count: bool = True,
+    ):
+        ...
+
+    def forward(
+        self,
+        log_intensity: torch.Tensor,
+        point_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        ...
+\end{lstlisting}
+
+Require
+\[
+    \texttt{log\_intensity.shape}
+    =
+    \texttt{point\_mask.shape}
+    =
+    (B,1,H,W)
+\]
+and a binary point mask.
+
+Register
+\[
+    A_{\mathrm{scale}}
+    =
+    H_{\mathrm{full}}W_{\mathrm{full}}
+\]
+as a buffer and compute the per-cell PPP mass
+\[
+    \lambda_{rc}
+    =
+    \frac{\exp(f_{\lambda,rc})}{A_{\mathrm{scale}}}.
+\]
+
+For each sample,
+\[
+    I_b=\sum_{r,c}\lambda_{b,rc},
+\]
+\[
+    O_b=
+    \sum_{r,c}
+    M_{b,rc}
+    \left(
+        f_{\lambda,b,rc}
+        -
+        \log A_{\mathrm{scale}}
+    \right).
+\]
+
+If \texttt{normalize\_by\_gt\_count=True}, return
+\[
+    \frac{1}{B}
+    \sum_b
+    \frac{I_b-O_b}{\max(N_b,1)},
+\]
+where
+\[
+    N_b=\sum_{r,c}M_{b,rc}.
+\]
+Otherwise return the batch mean of \(I_b-O_b\).
+
+Retain the previous assertions that the input and target shapes agree, the point mask is binary, and both tensors are finite.
+
+\paragraph{Numerical-stability diagnostics.}
+Because the intensity uses an exponential, also assert or log that
+\[
+    \lambda
+\]
+and the per-sample integral \(I_b\) are finite. During smoke tests and early training, log the minimum and maximum of \(f_\lambda\) and the total expected count
+\[
+    \Lambda_b=\sum_{r,c}\lambda_{b,rc}.
+\]
+
+Do not silently replace \(\exp\) by \texttt{softplus}, clamp the logits, or otherwise change the old PPP likelihood if overflow appears. Such a change modifies the statistical model and should be an explicit expert-level decision.
+
+\paragraph{RCS mark loss.}
+In \texttt{mark\_losses.py}, implement
+\begin{lstlisting}[language=Python]
+def masked_rcs_l1(
+    raw_rcs: torch.Tensor,
+    rcs_target: torch.Tensor,
+    point_mask: torch.Tensor,
+) -> torch.Tensor:
+    ...
+\end{lstlisting}
+
+The uploaded previous mark head uses
+\[
+    r_{\mathrm{pred}}
+    =
+    \left(q_{\mathrm{raw}}^{\mathrm{RCS}}\right)^3.
+\]
+Use masked absolute error,
+\[
+    L_{\mathrm{RCS},b}
+    =
+    \frac{
+        \sum_{r,c}
+        M_{b,rc}
+        \left|
+            r_{\mathrm{pred},b,rc}
+            -
+            r_{\mathrm{GT},b,rc}
+        \right|
+    }{
+        \max(N_b,1)
+    },
+\]
+followed by a mean over the scene batch.
+
+\paragraph{Doppler mark loss.}
+Implement a configurable module or function such as
+\begin{lstlisting}[language=Python]
+def masked_doppler_loss(
+    raw_doppler,
+    doppler_target,
+    point_mask,
+    mode,
+    doppler_period=None,
+):
+    ...
+\end{lstlisting}
+with physical prediction
+\[
+    d_{\mathrm{pred}}
+    =
+    \left(q_{\mathrm{raw}}^{\mathrm{Doppler}}\right)^3.
+\]
+
+Support at least
+\begin{itemize}
+    \item \texttt{signed\_l1}: masked \(L^1\) error between signed predicted and target radial velocity,
+    \item \texttt{signed\_circular}: the uploaded implementation's shortest circular difference, but only when a physically justified Doppler period is available.
+\end{itemize}
+
+For circular mode,
+\[
+    \Delta d
+    =
+    \operatorname{remainder}
+    \left(
+        d_{\mathrm{pred}}-d_{\mathrm{GT}}+\frac{T}{2},
+        T
+    \right)
+    -
+    \frac{T}{2}.
+\]
+Use \(|\Delta d|\), normalize per sample by \(\max(N_b,1)\), and then average over the batch.
+
+\paragraph{Doppler-period uncertainty.}
+The uploaded previous mark head expects a sample-specific \texttt{doppler\_period}. The inspected RadarGen TruckScenes code provides physical radial velocity in column 7 and normalization bounds of \([-120,120]\), but it does not establish that the interval width \(240\) is the physical aliasing period.
+
+Therefore, do not infer a circular period from the normalization bounds. Use \texttt{signed\_l1} in the first RadarGen-PPP implementation unless the TruckScenes radar metadata or devkit provides the physical wrapping period. If such a period is found, document its source and then enable the circular loss.
+
+\paragraph{No depth loss.}
+The uploaded old head also predicts depth. RadarGen's three target modalities are density, RCS, and Doppler, so do not port the depth output or depth loss.
+
+\paragraph{Common supervision mask.}
+Both mark losses use the same \texttt{point\_mask}. No RCS or Doppler loss is applied where the point mask is zero.
+
+\subsection{Replace the loss and backward pass in \texttt{scripts/train\_ppp.py}}
+
+\paragraph{Location.}
+Implement this only in \texttt{scripts/train\_ppp.py}. Leave the original training script unchanged.
+
+\paragraph{Loss flow.}
+After the training wrapper returns decoded fields, reshape them to
+\[
+    (B,3,1,H,W)
+\]
+and compute
+\begin{align*}
+L_{\mathrm{PPP}} &= \mathrm{PPPLoss}(f_\lambda,M),\\
+L_{\mathrm{RCS}} &= \mathrm{MaskedRCSLoss}(q_{\mathrm{raw}}^{\mathrm{RCS}},r,M),\\
+L_{\mathrm{Doppler}} &= \mathrm{MaskedDopplerLoss}(q_{\mathrm{raw}}^{\mathrm{Doppler}},d,M).
+\end{align*}
+
+Construct
+\[
+    L
+    =
+    w_{\mathrm{PPP}}L_{\mathrm{PPP}}
+    +
+    w_{\mathrm{RCS}}L_{\mathrm{RCS}}
+    +
+    w_{\mathrm{Doppler}}L_{\mathrm{Doppler}}.
+\]
+
+Because each of the three component losses already averages over the original scene batch \(B\), do not divide this sum by \(3B\) again. The earlier schematic \(3B\) mean described the equivalent per-instance formulation. With explicit per-modality batch means, the weighted sum above is clearer and avoids accidental double normalization.
+
+\paragraph{Backward pass.}
+Retain
+\begin{lstlisting}[language=Python]
+optimizer.zero_grad()
+accelerator.backward(loss)
+if accelerator.sync_gradients:
+    grad_norm = accelerator.clip_grad_norm_(
+        training_model.parameters(),
+        config.train.gradient_clip,
+    )
+optimizer.step()
+lr_scheduler.step()
+\end{lstlisting}
+
+Use the complete PPP training wrapper for gradient clipping so both the DiT and decoder are included.
+
+\paragraph{Logging.}
+Log at least
+\begin{lstlisting}
+loss_total
+loss_ppp_raw
+loss_rcs_raw
+loss_doppler_raw
+loss_ppp_weighted
+loss_rcs_weighted
+loss_doppler_weighted
+grad_norm
+lr
+\end{lstlisting}
+at the existing log interval.
+
+\paragraph{Diagnostic loss-balancing run.}
+Start with all three weights equal to 1.0. Run a short training experiment of a few thousand updates, inspect robust typical values of the three raw losses, and choose weights that place their contributions on approximately comparable numerical scales. Record both the raw and weighted losses in the experiment log.
+
+\subsection{Keep the optimizer, learning-rate scheduler, distributed training, and checkpoint infrastructure}
+
+\paragraph{What can be reused unchanged.}
+Retain the baseline machinery for
+\begin{itemize}
+    \item \texttt{Accelerator},
+    \item DDP training,
+    \item \texttt{DistributedRangedSampler},
+    \item gradient accumulation,
+    \item gradient clipping,
+    \item \texttt{build\_optimizer()},
+    \item \texttt{build\_lr\_scheduler()},
+    \item logging,
+    \item \texttt{save\_checkpoint()}.
+\end{itemize}
+
+Build the optimizer on the complete \texttt{RadarGenPPPTrainingModel} so that it contains the trainable DiT and decoder:
+\begin{lstlisting}[language=Python]
+optimizer = build_optimizer(
+    training_model,
+    config.train.optimizer,
+)
+\end{lstlisting}
+
+The frozen condition encoder remains outside the wrapper and is therefore not part of the optimizer.
+
+\paragraph{Accelerate preparation.}
+Prepare the training wrapper, optimizer, dataloader, and LR scheduler following the same order used by the baseline training script. Gradient clipping must operate on the wrapper parameters so it covers both the DiT and decoder.
+
+\paragraph{FSDP caveat.}
+Do not claim FSDP support is preserved without a separate test. The released \texttt{set\_fsdp\_env()} hardcodes
+\begin{lstlisting}
+FSDP_TRANSFORMER_CLS_TO_WRAP = "SanaBlock"
+\end{lstlisting}
+while RadarGen uses \texttt{SanaMSBlock}, and the PPP implementation adds an outer training wrapper plus a trainable decoder. The baseline TruckScenes configuration has \texttt{use\_fsdp: false}, so use the DDP path initially.
+
+If FSDP is needed later, explicitly verify and update the auto-wrap classes for \texttt{SanaMSBlock} and the new module structure before enabling it.
+
+\paragraph{Checkpoint saving.}
+The existing \texttt{save\_checkpoint()} is generic: it stores \texttt{model.state\_dict()}, optimizer state, scheduler state, epoch, and RNG state. It can therefore be reused on
+\begin{lstlisting}[language=Python]
+accelerator.unwrap_model(training_model)
+\end{lstlisting}
+so that both
+\[
+    \texttt{dit.*}
+\]
+and
+\[
+    \texttt{ppp\_decoder.*}
+\]
+are saved in the same PPP checkpoint.
+
+The frozen encoder does not need to be stored because it is reconstructed from the fixed pretrained DC-AE checkpoint.
+
+\paragraph{Fresh SANA loading versus PPP resume loading.}
+These are two different checkpoint paths and must not be conflated.
+
+For a fresh PPP run, use the existing \texttt{load\_checkpoint()} on the \emph{bare DiT before the wrapper is constructed}. This preserves RadarGen's official SANA-loading behavior, including insertion of the null text embedding under the unprefixed key
+\begin{lstlisting}
+y_embedder.y_embedding
+\end{lstlisting}
+
+For resuming a PPP training checkpoint, do \emph{not} use the existing \texttt{load\_checkpoint()} unchanged on the wrapper. That helper explicitly writes
+\begin{lstlisting}
+state_dict["y_embedder.y_embedding"] = ...
+\end{lstlisting}
+whereas a wrapper checkpoint stores the DiT key under a prefix such as
+\begin{lstlisting}
+dit.y_embedder.y_embedding
+\end{lstlisting}
+and it also checks only unprefixed positional-embedding names. Using it unchanged would create incorrect or unexpected keys.
+
+\paragraph{New PPP resume helper.}
+Create
+\begin{lstlisting}
+radargen/training/ppp_checkpoint.py
+\end{lstlisting}
+with a function such as
+\begin{lstlisting}[language=Python]
+def load_ppp_checkpoint(
+    checkpoint_path,
+    training_model,
+    optimizer=None,
+    lr_scheduler=None,
+    resume_optimizer=True,
+    resume_lr_scheduler=True,
+):
+    ...
+    return epoch, missing, unexpected, rng_state
+\end{lstlisting}
+
+The function should follow the generic helper's local-checkpoint logic but:
+\begin{enumerate}[label=\arabic*.]
+    \item load the saved PPP checkpoint,
+    \item take its stored \texttt{state\_dict} directly,
+    \item do not inject the null embedding again,
+    \item load the wrapper state dict,
+    \item restore optimizer and LR-scheduler state when requested,
+    \item return the stored RNG state and epoch,
+    \item log and validate missing and unexpected keys.
+\end{enumerate}
+
+If positional-embedding cache keys must be removed, use their actual wrapper-prefixed names discovered from one saved PPP state dict rather than assuming the original unprefixed names.
+
+\paragraph{Resume-state verification.}
+The smoke test must save a temporary PPP checkpoint, modify one DiT parameter and one decoder parameter, reload the checkpoint through \texttt{load\_ppp\_checkpoint()}, and verify that both return exactly to the saved values. Also verify optimizer and LR-scheduler step state.
+
+\paragraph{Learning-rate selection.}
+Keep RadarGen's optimizer type and constant-with-warmup schedule for the first smoke tests, but do not assume \(10^{-4}\) is optimal after unfreezing the decoder and changing the objective. Once the training path is stable, repeat the learning-rate range test used in the previous MMSegmentation work and select the operating learning rate from that experiment.
+
+\subsection{Create a separate PPP training configuration}
+
+\paragraph{New file.}
+Create
+\begin{lstlisting}
+configs/RadarGen_600M_512px_TS_PPP_training.yaml
+\end{lstlisting}
+by copying the actual repository file
+\begin{lstlisting}
+configs/RadarGen_600M_512px_TS_training.yaml
+\end{lstlisting}
+and modifying only the fields required by the PPP path.
+
+\paragraph{Data configuration.}
+Add
+\begin{lstlisting}[language=Python]
+ppp_data_dir: Optional[str] = None
+\end{lstlisting}
+to \texttt{DataConfig} in
+\begin{lstlisting}
+diffusion/utils/config.py
+\end{lstlisting}
+because the current dataclass does not define this field.
+
+The PPP YAML should use
+\begin{lstlisting}
+data:
+  dataset_dir: "/path/to/truckscenes"
+  ppp_data_dir: "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/smoke/hdf5_samples"
+  image_size: 512
+  load_text_feat: false
+  load_vae_feat: false
+  type: RadarGenPPPDatasetWrapper
+  sort_dataset: false
+  extra:
+    dataset_name: truckscenes
+    eval_split: train
+    dataset_version: v1.2-trainval
+    camera_views:
+      - CAMERA_RIGHT_FRONT
+      - CAMERA_LEFT_FRONT
+      - CAMERA_RIGHT_BACK
+      - CAMERA_LEFT_BACK
+    coordinate_range: 50.0
+    rcs_min: -20.0
+    rcs_max: 66.0
+    doppler_min: -120.0
+    doppler_max: 120.0
+\end{lstlisting}
+
+The configuration above starts with the smoke HDF5 root. Use the full root from subsection~4 only after verifying its completion inventory. Resolve \texttt{dataset\_dir} from the active local preprocessing configuration rather than inventing a raw-data path. Recover adapter/frame-selection settings, including any required \texttt{camera\_freq}, from the actual producer configuration and verify them against \texttt{configuration\_json} and temporal metadata; do not copy the old example's unverified 10.0 value. Cross-check the displayed spatial and mark-normalization bounds against the active baseline and metadata before use. The normalization bounds do not authorize rescaling PPP marks.
+
+Because the condition arrays are embedded, this dataset needs neither a separate \texttt{radar\_maps\_dir} nor \texttt{bev\_conditioning\_maps\_dir}. Raw dataset metadata may still be needed to reproduce adapter indexing and \texttt{data\_info}; do not assume HDF5 consolidation makes the entire training/evaluation system independent of the raw dataset.
+
+\paragraph{Model configuration.}
+Use
+\begin{lstlisting}
+model:
+  model: RadarGenPPP_600M_P1_D28
+  image_size: 512
+  mixed_precision: bf16
+  fp32_attention: true
+  load_from: hf://Efficient-Large-Model/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+  ...
+  extra:
+    num_maps: 3
+    num_conditions: 3
+    fixed_timestep: 0.0
+\end{lstlisting}
+and inherit the remaining architecture values from the RadarGen TruckScenes training config.
+
+\paragraph{AE configuration.}
+Retain
+\begin{lstlisting}
+vae:
+  vae_type: dc-ae
+  vae_pretrained: mit-han-lab/dc-ae-f32c32-sana-1.1
+  weight_dtype: float32
+  scale_factor: 0.41407
+  vae_latent_dim: 32
+  vae_downsample_rate: 32
+  sample_posterior: true
+\end{lstlisting}
+
+The PPP training script must respect the FP32 AE/decoder decision rather than copying the baseline's unconditional \texttt{.to(torch.float16)} conversion.
+
+\paragraph{PPP loss settings.}
+Use the already-supported \texttt{train.extra} dictionary:
+\begin{lstlisting}
+train:
+  ...
+  extra:
+    ppp_weight: 1.0
+    rcs_weight: 1.0
+    doppler_weight: 1.0
+    normalize_ppp_by_gt_count: true
+    velocity_loss_mode: signed_l1
+\end{lstlisting}
+
+These weights are initial diagnostic values, not final tuned values.
+
+\paragraph{Scheduler subsection.}
+The \texttt{SanaConfig} dataclass requires a scheduler subsection, so retain the copied RadarGen scheduler block for configuration compatibility. \texttt{scripts/train\_ppp.py} must not construct or use the diffusion \texttt{Scheduler}. The only scheduler-derived choice retained by the PPP model is the already-resolved fixed model timestep \(0.0\).
+
+\paragraph{Output directory.}
+The training code uses the root-level
+\begin{lstlisting}
+config.work_dir
+\end{lstlisting}
+for logs and checkpoints. Therefore add an explicit root field such as
+\begin{lstlisting}
+work_dir: output/RadarGen_600M_512px_TS_PPP
+\end{lstlisting}
+to the new YAML. The existing nested \texttt{train.work\_dir} field is not the path used by the checkpoint calls in \texttt{scripts/train.py}; set it to the same value for clarity or leave it inherited, but do not rely on it as the authoritative output directory.
+
+\paragraph{Name and tracking.}
+Give the run a distinct \texttt{name} and, if desired, a distinct tracker project name. This prevents PPP checkpoints and logs from being confused with baseline RadarGen runs.
+
+\paragraph{Work package 1 status (3 October 2026).}
+The specified PPP YAML and \texttt{scripts/train\_ppp.py} skeleton are
+implemented using \texttt{SanaConfig} and the existing smoke HDF5 root.
+\texttt{DataConfig.ppp\_data\_dir} defaults to \texttt{None}.
+The entry point parses and validates configuration only: with
+\texttt{--validate-only} it prints the resolved configuration and exits
+with code 0; without the flag it explicitly reports that PPP training
+is not implemented and exits with code 1. No model loading, weight
+downloads, GPU initialization, or training occurs.
+Validate from the repository root with:
+\begin{lstlisting}[language=bash]
+source jsc_jupiter/modules_jupiter.sh
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/bin/python -B \
+    scripts/train_ppp.py \
+    --config_path configs/RadarGen_600M_512px_TS_PPP_training.yaml \
+    --validate-only
+\end{lstlisting}
+To allow lightweight configuration imports, \texttt{diffusion/__init__.py}
+now loads its existing runtime exports lazily. Checks passed for
+configuration loading, explicit training refusal, rejection of a nonzero
+fixed timestep, and absence of heavy runtime imports on both entry-point
+paths. The original YAML decodes identically apart from the new optional
+field. The baseline entry point, YAML, and dataset code are unchanged;
+full baseline training was not run. HDF5 validation, the loader, sparse
+targets, losses, model, and training loop remain unimplemented in this
+PPP path. Work package 2 next establishes dataset and target correctness.
+
+\subsection{Initialize the model from the same pretrained SANA weights as RadarGen}
+
+\paragraph{Main initialization principle.}
+The main PPP experiment should start from the same generic pretrained SANA weights and pretrained DC-AE weights as RadarGen, not from a fully trained RadarGen checkpoint. This keeps the starting point of the two training formulations comparable.
+
+\paragraph{Fresh-training sequence.}
+Use this order:
+\begin{enumerate}[label=\arabic*.]
+    \item Build the bare \texttt{RadarGenPPP\_600M\_P1\_D28} with the original 32-channel SANA input projection.
+    \item Load the same SANA 600M checkpoint specified by the baseline RadarGen TruckScenes config into this bare DiT using the existing checkpoint helper.
+    \item Pass the same \texttt{null\_embed\_path} used by the baseline so the inherited text-conditioning parameters are initialized consistently.
+    \item Inspect the returned missing and unexpected keys. RadarGen-specific parameters such as \texttt{modality\_pe} are expected not to be supplied by the generic SANA checkpoint; arbitrary unrelated mismatches are not.
+    \item Call \texttt{inflate\_sana\_input\_channels\_for\_ppp()} only after the SANA weights have been loaded.
+    \item Load the pretrained DC-AE from \texttt{mit-han-lab/dc-ae-f32c32-sana-1.1}.
+    \item Keep the AE in FP32, freeze its encoder, and adapt the decoder output convolution from three channels to one using subsection~19.
+    \item Unfreeze the decoder.
+    \item Construct \texttt{PPPDecoder}.
+    \item Construct \texttt{RadarGenPPPTrainingModel(dit, ppp\_decoder)}.
+    \item Build the optimizer on this complete training wrapper.
+\end{enumerate}
+
+\paragraph{Why the order matters.}
+The official SANA checkpoint contains weights for the original 32-channel input projection. Loading it after replacing the projection by the 99-channel PPP layer would create an avoidable shape mismatch. The same logic is already used by RadarGen: load the pretrained model first, then inflate the input projection.
+
+\paragraph{Modified-layer initialization.}
+The new 99-channel input projection should inherit three repeated copies of the original SANA input weights, scaled by \(1/3\), while the three modality-embedding input channels retain the same Xavier initialization strategy used by RadarGen.
+
+The single-channel decoder output convolution should be initialized by averaging the three pretrained RGB output filters and, when present, their biases.
+
+\paragraph{Validation of checkpoint surgery.}
+Immediately after initialization, print the missing and unexpected key lists and verify the shapes of
+\begin{itemize}
+    \item \texttt{dit.x\_embedder.proj.weight},
+    \item \texttt{dit.modality\_pe},
+    \item the final one-channel decoder convolution.
+\end{itemize}
+
+Do not use \texttt{strict=False} as a blanket reason to ignore unexplained mismatches.
+
+\paragraph{Future RadarGen-warm-start experiment.}
+After the SANA-initialized PPP model has been trained and evaluated, a separate experiment may initialize all shape-compatible parameters from the fully trained RadarGen checkpoint. That experiment should be reported as radar-specific transfer learning, not as the main fair comparison.
+
+\subsection{Replace diffusion inference with modality-conditioned direct prediction}
+
+\paragraph{New inference module.}
+Do not modify the existing \texttt{RadarGenDiffusionPipeline}. Create
+\begin{lstlisting}
+radargen/inference/ppp_pipeline.py
+\end{lstlisting}
+with a class such as
+\begin{lstlisting}[language=Python]
+class RadarGenPPPPipeline:
+    ...
+\end{lstlisting}
+
+It should load
+\begin{itemize}
+    \item the PPP DiT,
+    \item the single-channel decoder,
+    \item the frozen condition encoder,
+    \item the existing empty-text machinery,
+    \item a trained PPP checkpoint.
+\end{itemize}
+
+\paragraph{Direct prediction API.}
+A useful core method is
+\begin{lstlisting}[language=Python]
+@torch.no_grad()
+def predict_fields(
+    self,
+    bev_color_map,
+    bev_seg_map,
+    bev_velocity_map,
+):
+    ...
+    return {
+        "log_intensity": f_lambda,
+        "rcs_raw": raw_rcs,
+        "doppler_raw": raw_doppler,
+    }
+\end{lstlisting}
+
+The method should
+\begin{enumerate}[label=\arabic*.]
+    \item transform/encode the three BEV maps exactly as during training,
+    \item prepare the empty text embedding for three modalities,
+    \item construct the fixed compatibility timestep,
+    \item call the PPP DiT once,
+    \item decode all three modality latents,
+    \item reshape the output to \((1,3,1,H,W)\),
+    \item return the three scalar fields.
+\end{enumerate}
+
+There is no Gaussian latent initialization, no scheduler, no denoising loop, and no classifier-free diffusion sampling.
+
+\paragraph{PPP checkpoint loading for inference.}
+A trained PPP checkpoint contains the state of the training wrapper, with the DiT and modified decoder stored under their wrapper prefixes. It must therefore not be loaded through the baseline \texttt{RadarGenInference.load\_checkpoint()} path, which expects the original RadarGen model structure.
+
+Construct the inference model in the same structural order as training: instantiate the PPP DiT, apply the 99-channel input modification, load the pretrained DC-AE, replace its final RGB convolution by the one-channel layer, construct \texttt{PPPDecoder}, and construct \texttt{RadarGenPPPTrainingModel}. Then load the trained PPP wrapper state with the PPP-specific checkpoint loader introduced in subsection~22, using a model-only mode in which optimizer and scheduler states are optional. After loading, call \texttt{eval()} on the complete wrapper and use the separately loaded frozen AE encoder for the three conditioning maps.
+
+The loader should verify that the checkpoint contains both \texttt{dit.*} and \texttt{ppp\_decoder.*} parameters and should reject unexpected architectural mismatches rather than silently dropping them.
+
+\paragraph{Inference config.}
+Create
+\begin{lstlisting}
+configs/RadarGen_600M_512px_TS_PPP_inference.yaml
+\end{lstlisting}
+derived from the PPP training configuration. Set \texttt{model.load\_from} to the trained PPP checkpoint and retain the condition and AE settings.
+
+\paragraph{HDF5 conditioning path.}
+When evaluating these preprocessed samples, add an explicit HDF5 condition-loading path that uses \texttt{conditioning/appearance}, \texttt{conditioning/semantics}, and \texttt{conditioning/velocity} with the same validated transform as training. Existing \texttt{bev\_maps\_dir} support refers to the legacy separate-map layout; do not point that loader at the HDF5 root without adapting it. Preserve scene/frame identities when caching PPP fields. Raw-file condition generation remains an optional separate path.
+
+\subsection{Replace RadarGen point recovery with PPP sampling}
+
+\paragraph{New sampling module.}
+Create
+\begin{lstlisting}
+radargen/ppp/
+    __init__.py
+    sampling.py
+\end{lstlisting}
+
+Implement a function such as
+\begin{lstlisting}[language=Python]
+def sample_ppp_grid(
+    log_intensity: torch.Tensor,
+    raw_rcs: torch.Tensor,
+    raw_doppler: torch.Tensor,
+    coordinate_range: float,
+    generator: torch.Generator | None = None,
+) -> np.ndarray:
+    ...
+\end{lstlisting}
+
+The input fields for one sample should each be scalar grids with shape \((H,W)\) or \((1,H,W)\). Normalize the interface at the beginning of the function and assert matching spatial shapes.
+
+\paragraph{PPP cell masses.}
+Use exactly the same intensity transformation as the training loss:
+\[
+    \lambda_{rc}
+    =
+    \frac{\exp(f_{\lambda,rc})}{HW}.
+\]
+In this discrete implementation, \(\lambda_{rc}\) is the expected number of PPP events assigned to that grid cell. The expected total point count is
+\[
+    \Lambda
+    =
+    \sum_{r,c}\lambda_{rc}.
+\]
+
+Assert that the cell masses and \(\Lambda\) are finite before sampling.
+
+\paragraph{Sampling rule.}
+Draw independent cell counts
+\[
+    N_{rc}
+    \sim
+    \operatorname{Poisson}(\lambda_{rc}).
+\]
+For each cell, emit exactly \(N_{rc}\) points at the center of that cell.
+
+This is equivalent to drawing a Poisson total count with mean \(\Lambda\) and then assigning the events categorically according to normalized cell masses. Do not threshold the intensity map and do not use RadarGen's IRL1 deconvolution.
+
+The training target is binary after rasterization, but the generative PPP itself is not Bernoulli. Therefore do not clamp sampled cell counts to one. Multiple sampled events in one cell remain valid under the discrete PPP model.
+
+\paragraph{Exact inverse coordinate mapping.}
+The target rasterization in subsection~3 uses image column
+\[
+    c=\lfloor u\rfloor
+\]
+and flipped image row
+\[
+    r=H-1-\lfloor v\rfloor.
+\]
+Consequently, the metric coordinates of the cell center are
+\[
+    x
+    =
+    \left(
+        \frac{c+0.5}{W}
+    \right)
+    2R-R,
+\]
+\[
+    y
+    =
+    \left(
+        \frac{H-r-0.5}{H}
+    \right)
+    2R-R,
+\]
+where \(R=\texttt{coordinate\_range}\).
+
+This reproduces the same bottom-left physical-coordinate convention used by RadarGen's point-cloud recovery code, which flips the image row before adding the half-cell offset.
+
+\paragraph{Mark values.}
+For every emitted event in cell \((r,c)\), evaluate
+\[
+    \hat r
+    =
+    \left(
+        q_{\mathrm{raw},rc}^{\mathrm{RCS}}
+    \right)^3,
+    \qquad
+    \hat d
+    =
+    \left(
+        q_{\mathrm{raw},rc}^{\mathrm{Doppler}}
+    \right)^3.
+\]
+All events sampled in one discrete cell therefore share that cell's predicted marks.
+
+Do not apply RadarGen's RGB postprocessing, Voronoi interpolation, or RCS rounding.
+
+\paragraph{Do not clamp marks silently.}
+The original evaluation normalizes RCS and Doppler with configured bounds but does not establish that generated values should be clipped to those bounds. Therefore return the raw physical mark predictions. During validation, log the fraction of generated RCS and Doppler values outside the configured normalization ranges. If this fraction is substantial, treat any later clipping policy as an explicit modeling decision.
+
+\paragraph{Output interface.}
+Return a NumPy array with shape
+\[
+    (N,4)
+\]
+and columns
+\[
+    [x,y,\mathrm{RCS},\mathrm{Doppler}].
+\]
+This is the exact point-cloud representation consumed by RadarGen's evaluation wrapper after its \(z\) coordinate is removed.
+
+\paragraph{Random generator and reproducibility.}
+Use a dedicated \texttt{torch.Generator} supplied by the PPP inference pipeline and seed it from the evaluation configuration. Do not call a global unseeded random sampler. A single evaluation run should therefore be reproducible given the same sample order and seed.
+
+\paragraph{Round-trip test.}
+The coordinate test from subsection~3 must verify that converting real metric radar points to PPP cells and then mapping those cells back to metric centers produces the expected orientation. In particular, include points with positive and negative \(y\) so a vertical-axis inversion cannot pass unnoticed.
+
+\subsection{Keep the RadarGen evaluation interface and add PPP-native count metrics}
+
+\paragraph{Original RadarGen metrics remain unchanged.}
+The sampled PPP point cloud must be presented to the existing evaluator as
+\[
+    (N,4)
+\]
+with columns
+\[
+    [x,y,\mathrm{RCS},\mathrm{Doppler}]
+\]
+in the ego flat-up frame and physical mark units.
+
+Do not modify the mathematical implementation of RadarGen's existing point-cloud metrics:
+\begin{itemize}
+    \item location Chamfer distance,
+    \item full-vector normalized Chamfer distance,
+    \item IoU@1m,
+    \item Distance-Attribute recall, precision, and F1,
+    \item MMD for location, RCS, and Doppler,
+    \item foreground Density Similarity,
+    \item Bounding Box Hit Rate.
+\end{itemize}
+
+These remain sample-based metrics and are evaluated on an actual sampled PPP realization.
+
+\paragraph{New evaluation wrapper.}
+Create
+\begin{lstlisting}
+evaluation/models/radargen_ppp_wrapper.py
+\end{lstlisting}
+and import it from
+\begin{lstlisting}
+evaluation/models/__init__.py
+\end{lstlisting}
+
+Register it with a unique model name such as
+\begin{lstlisting}[language=Python]
+@register_model("radargen_ppp")
+\end{lstlisting}
+and implement the same method signature used by the existing wrapper:
+\begin{lstlisting}[language=Python]
+def predict_point_cloud(
+    self,
+    adapter,
+    sample_data,
+    sample_data_next=None,
+    scene_token=None,
+    frame_idx=None,
+) -> np.ndarray:
+    ...
+\end{lstlisting}
+
+The wrapper should use precomputed BEV maps when \texttt{bev\_maps\_dir}, scene token, and frame index are available, following \texttt{RadarGenWrapper}. Otherwise it should use the PPP inference pipeline's full condition-generation path if that path is implemented.
+
+\paragraph{One forward pass per evaluated sample.}
+PPP-native metrics need the intensity field in addition to the sampled point cloud. Do not run the model twice.
+
+Have the PPP inference call return or internally retain both the scalar fields and the sampled point cloud. The evaluation wrapper should return only the required \((N,4)\) point cloud from \texttt{predict\_point\_cloud()}, but cache the detached intensity field together with the current scene token and frame index. Provide a method such as
+\begin{lstlisting}[language=Python]
+def get_last_ppp_fields(self, scene_token, frame_idx):
+    ...
+\end{lstlisting}
+that verifies the requested identifiers match the cached prediction before returning it.
+
+\paragraph{Ground truth for analytical metrics.}
+This distinction is important: RadarGen's evaluator does \emph{not} evaluate against the deduplicated training target. Its \texttt{\_get\_gt\_pcl()} loads the raw radar point cloud, applies camera-frustum filtering and the same square range filter, and returns the continuous filtered columns
+\[
+    [x,y,\mathrm{RCS},\mathrm{Doppler}]
+\]
+without the training-time pixel deduplication. The stored exact detections can be considered as an evaluation source only after verifying equality of sample identity, filtering, geometry, and mark definitions with this evaluator path; binary training masks cannot substitute for them.
+
+Therefore all PPP-native evaluation count errors must compare against this same evaluator ground truth, not against \texttt{point\_mask.sum()} from the derived training target. This preserves comparability with RadarGen's foreground point-count metrics.
+
+\paragraph{New PPP metrics module.}
+Create
+\begin{lstlisting}
+evaluation/ppp_metrics.py
+\end{lstlisting}
+with functions such as
+\begin{lstlisting}[language=Python]
+def make_ppp_grid_xy(H, W, coordinate_range) -> np.ndarray:
+    ...
+
+def expected_total_count(cell_mass_grid) -> float:
+    ...
+
+def expected_count_in_box(cell_mass_grid, box, grid_xy) -> float:
+    ...
+
+def compute_ppp_count_metrics(
+    cell_mass_grid,
+    gt_pcl,
+    bounding_boxes,
+    grid_xy,
+) -> dict:
+    ...
+
+def aggregate_ppp_metrics(aggregator, ppp_metrics) -> None:
+    ...
+\end{lstlisting}
+
+Here \texttt{cell\_mass\_grid} is
+\[
+    \lambda_{rc}
+    =
+    \frac{\exp(f_{\lambda,rc})}{HW},
+\]
+not the raw log-intensity field.
+
+\paragraph{Grid geometry.}
+Construct \texttt{grid\_xy} from the exact cell-center inverse mapping in subsection~26. It should have one row per PPP grid cell and contain the corresponding physical \(x,y\) location.
+
+RadarGen's box metrics use
+\begin{lstlisting}
+bottom_corners = box.bottom_corners()
+get_points_in_box(point_cloud, bottom_corners)
+\end{lstlisting}
+where the four bottom corners define a rotated 2D BEV polygon. Reuse the same \texttt{get\_points\_in\_box()} helper on \texttt{grid\_xy} to determine which PPP cell centers belong to each annotated box. Do not replace the rotated polygon by an axis-aligned rectangle.
+
+For a box \(B\),
+\[
+    \Lambda(B)
+    \approx
+    \sum_{j:\,x_j\in B}
+    \lambda_j.
+\]
+This is a cell-center discretization of the PPP integral over the box.
+
+\paragraph{Expected count metrics.}
+For the full evaluation region,
+\[
+    \Lambda(\mathcal X)
+    =
+    \sum_j\lambda_j
+\]
+is the model's expected total count. Compare it with
+\[
+    N_{\mathrm{GT}}^{\mathrm{scene}}
+    =
+    \texttt{gt\_pcl.shape[0]}.
+\]
+At minimum record
+\begin{itemize}
+    \item \texttt{ppp\_expected\_total\_count},
+    \item \texttt{ppp\_total\_count\_abs\_error}.
+\end{itemize}
+
+For every annotated box, use the existing \texttt{get\_points\_in\_box(gt\_pcl, bottom\_corners)} call to obtain the corresponding continuous ground-truth count and record
+\begin{itemize}
+    \item \texttt{ppp\_expected\_count},
+    \item \texttt{ppp\_expected\_count\_abs\_error}.
+\end{itemize}
+
+\paragraph{Analytical hit probability.}
+For any box,
+\[
+    N(B)
+    \sim
+    \operatorname{Poisson}(\Lambda(B)),
+\]
+so
+\[
+    P(N(B)>0)
+    =
+    1-\exp(-\Lambda(B)).
+\]
+
+To obtain the analytical counterpart most directly comparable to RadarGen's Hit Rate, average this probability only over boxes containing at least one ground-truth radar point, because RadarGen's hit-rate numerator and denominator are defined on that GT-positive subset. Record these box probabilities under a separate key such as
+\begin{lstlisting}
+ppp_hit_probability_gt_positive
+\end{lstlisting}
+
+The mean of these probabilities is the expected hit fraction under the PPP for the same set of GT-positive boxes. Do not call it the original RadarGen \texttt{hit\_rate}.
+
+\paragraph{Do not replace Density Similarity.}
+Continue to calculate RadarGen's Density Similarity from the sampled PPP point cloud:
+\[
+    \mathrm{DS}
+    =
+    \frac{\min(N_{\mathrm{syn}},N_{\mathrm{GT}})}
+         {\max(N_{\mathrm{syn}},N_{\mathrm{GT}})}
+\]
+with the existing zero-count special case. The analytical expected count is an additional quantity, not a replacement.
+
+An expected Density Similarity
+\[
+    \mathbb E_{N\sim\operatorname{Poisson}(\Lambda(B))}
+    [\mathrm{DS}(N,N_{\mathrm{GT}})]
+\]
+may be added later by a truncated Poisson sum, but it should not block the initial implementation.
+
+\paragraph{Aggregation without breaking baseline models.}
+Do not add PPP-only keys to the existing static \texttt{PER\_SAMPLE\_METRICS} or \texttt{PER\_BOX\_METRICS} lists, because \texttt{aggregate\_metrics()} currently requires every listed key to be present for every evaluated model.
+
+Instead, implement \texttt{aggregate\_ppp\_metrics()} separately. Append PPP per-sample quantities to
+\begin{lstlisting}
+aggregator["per_sample_scores"][...]
+\end{lstlisting}
+and PPP per-box quantities to
+\begin{lstlisting}
+aggregator["per_box_scores"][...]
+\end{lstlisting}
+only for the PPP model. The existing \texttt{finalize\_global\_metrics()} already iterates dynamically over the keys present in these dictionaries, so it can calculate mean and standard deviation without changing the baseline metric key requirements.
+
+\paragraph{Evaluator integration.}
+After the existing evaluator obtains
+\begin{lstlisting}
+syn_pcl = mw.predict_point_cloud(...)
+\end{lstlisting}
+and computes and aggregates the normal RadarGen metrics, add a guarded branch equivalent to
+\begin{lstlisting}[language=Python]
+if hasattr(mw, "get_last_ppp_fields"):
+    fields = mw.get_last_ppp_fields(scene_token, frame_idx)
+    ppp_metrics = compute_ppp_count_metrics(
+        fields["cell_mass_grid"],
+        gt_pcl,
+        bounding_boxes,
+        grid_xy,
+    )
+    aggregate_ppp_metrics(aggregators[mw.name], ppp_metrics)
+\end{lstlisting}
+
+This leaves baseline wrappers untouched.
+
+\paragraph{Evaluation configuration.}
+Create
+\begin{lstlisting}
+evaluation/configs/truckscenes_eval_ppp.yaml
+\end{lstlisting}
+from the existing \texttt{truckscenes\_eval.yaml}. Include both the original \texttt{radargen} entry and the new \texttt{radargen\_ppp} entry if the goal is a side-by-side run. Use the same evaluation split, per-box setting, classes, and spatial normalization.
+
+Use a fixed PPP sampling seed, initially 42, for direct sampled-metric comparison. The analytical PPP-native count metrics do not depend on this seed.
+
+\paragraph{Empty whole-scene realization check.}
+A PPP can theoretically sample zero points. The current RadarGen wrapper and several existing point-cloud metrics assume a nonempty synthetic cloud. Do not silently resample until nonempty, because that would change the PPP distribution. Before final evaluation, run the trained PPP model over the evaluation set with the chosen seed and count empty whole-scene samples. With realistic expected radar counts this probability should be negligible. If any occur, stop and define an explicit evaluation policy for undefined point-cloud metrics rather than fabricating a point or resampling conditionally.
+
+\subsection{Add a minimal end-to-end test before full training}
+
+\paragraph{Dedicated smoke-test script.}
+Create
+\begin{lstlisting}
+scripts/test_ppp_pipeline.py
+\end{lstlisting}
+that loads one or a few PPP samples and executes the complete training path through one forward and backward pass without starting a full training run.
+
+The test should be deterministic and should fail with clear assertions rather than only printing shapes.
+
+\paragraph{HDF5 source and derived-target checks.}
+Verify the full supplied schema separately from the minimal datasets read on each training access. Check
+\begin{itemize}
+ \item the three \texttt{conditioning/} images, three \texttt{radargen\_targets/} maps, three \texttt{ppp\_targets/} arrays, native camera depth datasets, and listed metadata paths against subsection~4;
+ \item schema version, filtering policy, scene token, frame index, split, dataset version, and temporal identities against the index and producer;
+ \item matching detection lengths, expected shapes/dtypes, finite numeric values, camera coverage, and actual native depth dimensions;
+ \item the scene success record and exact sample inventory, excluding \texttt{\_SUCCESS.json} from training;
+ \item binary derived \texttt{point\_mask}, finite physical mark targets, and consistent marks from the same retained detection;
+ \item equality of active-mask count and final retained-cell count, with both collision-stage counts reported;
+ \item identical scene/frame association for conditions and \(t_0\) radar targets.
+\end{itemize}
+The three derived supervision maps need not exist on disk. Check coordinates with both signs of \(y\), ties and collisions, and the metric-to-grid-to-cell-center round trip. Compare loader outputs with zero and multiple workers and across repeated epochs; fail explicitly on an incompatible file rather than substituting another sample.
+
+\paragraph{Dataset equivalence check.}
+For the same scene and frame, compare the three transformed BEV condition tensors from the baseline \texttt{RadarGenDataset} and the new \texttt{RadarGenPPPDataset}. They should match numerically.
+
+\paragraph{Condition-encoder checks.}
+Verify that the three \(512\times512\) condition maps encode to the expected DC-AE latent resolution
+\[
+    512/32=16
+\]
+with 32 latent channels. The encoder must remain in evaluation mode, have \texttt{requires\_grad=False}, and receive no gradients.
+
+\paragraph{DiT input and modality checks.}
+After PPP input inflation, assert
+\[
+    \texttt{model.x\_embedder.proj.in\_channels}
+    =
+    3\cdot32+3
+    =
+    99.
+\]
+
+Verify the forward construction
+\[
+B\times96\times16\times16
+\rightarrow
+B\times3\times99\times16\times16
+\rightarrow
+3B\times99\times16\times16.
+\]
+
+Assert
+\[
+    \texttt{modality\_pe.shape}=(3,3)
+\]
+and that it is trainable.
+
+Optionally register one temporary debug hook around a \texttt{SanaMSBlock} to verify that its input has the \(3B\) modality-expanded batch dimension and that the existing internal rearrangement jointly attends over all three modality token sets.
+
+\paragraph{Fixed-timestep regression check.}
+Instantiate the original RadarGen flow scheduler once in the smoke test and verify that the first model-visible timestep is \(0.0\). Then assert that the PPP forward always receives a length-\(3B\) tensor filled with zero and never samples random timesteps.
+
+\paragraph{Decoder structure and precision checks.}
+Assert that
+\begin{itemize}
+    \item the full AE was loaded from the configured SANA DC-AE checkpoint,
+    \item the condition encoder remains frozen,
+    \item trainable decoder parameters are FP32 before autocast,
+    \item the final decoder convolution has one output channel,
+    \item no \texttt{detach()} exists between predicted latent and decoder,
+    \item the decoded shape is \(3B\times1\times512\times512\).
+\end{itemize}
+
+Decode a fixed latent in decoder \texttt{train()} and \texttt{eval()} modes under \texttt{torch.no\_grad()} and compare the results. If they differ materially, inspect the responsible layer before full training.
+
+\paragraph{PPP numerical checks.}
+For the density output, log
+\begin{itemize}
+    \item minimum and maximum log-intensity,
+    \item minimum and maximum cell mass,
+    \item expected total count \(\Lambda\).
+\end{itemize}
+Assert that all are finite after the exponential.
+
+For the RCS and Doppler outputs, log both raw field ranges and cubed physical mark ranges. Also log the fraction of physical marks outside the configured evaluation normalization ranges. Do not clamp them in the smoke test.
+
+\paragraph{Loss checks.}
+Compute
+\[
+L_{\mathrm{PPP}},
+\qquad
+L_{\mathrm{RCS}},
+\qquad
+L_{\mathrm{Doppler}},
+\qquad
+L_{\mathrm{total}}
+\]
+and assert that all are finite.
+
+Use \texttt{signed\_l1} Doppler loss unless the physical circular period has already been established and documented.
+
+\paragraph{Gradient checks.}
+After one backward pass, require finite nonzero gradients for
+\begin{itemize}
+    \item one representative early DiT parameter,
+    \item \texttt{modality\_pe},
+    \item one early decoder parameter,
+    \item the new one-channel decoder output convolution.
+\end{itemize}
+All encoder gradients must remain \texttt{None}.
+
+\paragraph{Checkpoint round-trip.}
+Save a temporary PPP checkpoint with the existing \texttt{save\_checkpoint()} on the unwrapped training wrapper. Record one DiT tensor and one decoder tensor, perturb them, reload through the new \texttt{load\_ppp\_checkpoint()}, and assert exact restoration. Also verify optimizer and LR-scheduler state restoration.
+
+\paragraph{Sampling checks.}
+Sample a point cloud through \texttt{sample\_ppp\_grid()} with a seeded \texttt{torch.Generator}. Verify
+\begin{itemize}
+    \item output shape \((N,4)\),
+    \item finite values,
+    \item \(x,y\) inside the configured spatial region,
+    \item reproducibility for the same seed,
+    \item a different realization for a different seed,
+    \item exact use of the flipped-row inverse coordinate mapping.
+\end{itemize}
+
+Do not require the sampled count to equal the expected count. Instead, log
+\[
+    N_{\mathrm{sample}}
+    \quad\text{and}\quad
+    \Lambda.
+\]
+
+\paragraph{Evaluation checks.}
+Pass the sampled point cloud through the existing location-based RadarGen metric functions.
+
+For one annotated bounding box, calculate
+\begin{enumerate}[label=\arabic*.]
+    \item the sampled synthetic count through the existing \texttt{get\_points\_in\_box()},
+    \item the continuous evaluator ground-truth count through the same function,
+    \item the analytical expected count \(\Lambda(B)\) from PPP cell centers,
+    \item the analytical hit probability \(1-e^{-\Lambda(B)}\).
+\end{enumerate}
+
+Verify that the PPP analytical count uses the evaluator's continuous filtered ground truth rather than the deduplicated mask derived by the training loader.
+
+\paragraph{Empty-sample check.}
+If the smoke-test PPP sample happens to produce zero whole-scene points, do not fabricate a detection. The sampler itself has behaved legally. For the smoke test, record this case and either choose another seed for testing the existing nonempty-only point-cloud metrics or skip those metric assertions. The final evaluation policy is handled separately as described in subsection~27.
+
+\paragraph{Progression after the smoke test.}
+Only after all structural assertions pass, proceed in this order:
+\begin{enumerate}[label=\arabic*.]
+    \item tiny-subset overfit test,
+    \item a few-thousand-update run with unit loss weights to measure loss scales,
+    \item selection of \(w_{\mathrm{PPP}},w_{\mathrm{RCS}},w_{\mathrm{Doppler}}\),
+    \item learning-rate range test,
+    \item short multi-GPU stability test,
+    \item full training.
+\end{enumerate}
+\end{document}
