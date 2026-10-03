@@ -1978,6 +1978,41 @@ radargen/losses/
     mark_losses.py
 \end{lstlisting}
 
+\paragraph{Work package 3 scope and confirmed conventions.}
+Implement and test the losses independently as standalone PyTorch
+components. Do not port the MMSegmentation head architecture or add
+MMSegmentation dependencies. Connecting the losses to the model,
+optimizer, and training loop belongs to work package~5.
+
+The active baseline and PPP paths do not use random crop augmentation.
+Their deterministic resize and center crop preserve the complete
+spatial extent of the supplied \(512\times512\) maps.
+Use \texttt{out\_img\_size=(512,512)}, hence
+\(A_{\mathrm{scale}}=262144\), independently of the encoder's latent
+resolution.
+
+The losses consume the binary point mask and physical RCS/Doppler
+grids produced by work package~2. The mask represents retained
+occupied cells after collision handling, not the multiplicity of
+the original detection list. Zero-valued marks remain valid wherever
+the point mask equals one.
+
+Perform exponential and cubic transformations and loss reductions
+in FP32, including under mixed-precision training, while preserving
+autograd. Reject nonfinite transformed values or losses explicitly;
+do not silently clamp predictions or alter the prescribed formulas.
+
+Test empty masks at the loss level: for finite predictions they
+contribute the PPP integral and zero mark losses, using the specified
+denominator \(\max(N_b,1)\). This does not change the dataset's current
+explicit rejection of empty frames.
+
+Use one focused CPU test suite to verify analytical loss values,
+per-sample normalization followed by batch averaging, masking,
+zero and negative marks, empty masks, and gradients.
+Test circular Doppler behavior with synthetic periods only;
+the active TruckScenes configuration remains \texttt{signed\_l1}.
+
 \paragraph{Spatial PPP loss.}
 Implement \texttt{PPPLoss} in \texttt{ppp\_loss.py} by porting the active uploaded implementation, not one of the older commented variants:
 \begin{lstlisting}[language=Python]
@@ -2145,6 +2180,43 @@ The uploaded old head also predicts depth. RadarGen's three target modalities ar
 
 \paragraph{Common supervision mask.}
 Both mark losses use the same \texttt{point\_mask}. No RCS or Doppler loss is applied where the point mask is zero.
+
+\paragraph{Work package 3 implementation status (3 October 2026).}
+The standalone package \texttt{radargen/losses/} now exports
+\texttt{PPPLoss}, \texttt{masked\_rcs\_l1}, and
+\texttt{masked\_doppler\_loss} from the files specified above.
+\texttt{PPPLoss} defaults to \texttt{out\_img\_size=(512,512)} and stores
+the fixed area 262144 in its registered \texttt{pixel\_scale} buffer;
+smaller synthetic input grids do not change that area. The active PPP
+formula and cubic mark links are implemented with per-sample normalization
+followed by batch averaging. All transformations and reductions disable
+autocast and use FP32 while preserving gradients to the supplied tensors.
+Shape/device mismatches, nonbinary masks, nonfinite inputs, transformed
+values, and loss results are rejected explicitly. Empty masks contribute
+the PPP integral and zero mark losses; the loader's empty-frame rejection
+is unchanged.
+
+Circular Doppler accepts an explicit positive finite scalar period or
+per-sample tensor of shape \((B,)\) or \((B,1,1,1)\), in m/s and
+representable in FP32. No period is inferred; the active configuration
+remains \texttt{signed\_l1}. The supplied head's RCS docstring says
+``exp'', but its executable loss uses a cube, consistent with this
+specification; the executable formula was followed.
+
+\texttt{tests/test\_ppp\_losses.py} passed all 10 focused CPU tests with
+model and MMSegmentation imports blocked. Checks covered independently
+calculated values and analytical gradients away from nondifferentiable
+points, both PPP normalization modes, unequal counts, masks, zero/negative
+marks, empty masks, synthetic circular periods, invalid inputs, overflow,
+and FP16/BF16 inputs under CPU autocast. Run from the repository root:
+\begin{lstlisting}[language=bash]
+source jsc_jupiter/modules_jupiter.sh
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/bin/python -B \
+    -m unittest discover -s tests -p test_ppp_losses.py -v
+\end{lstlisting}
+No dataset checks, preprocessing, GPU tests, or training were run for WP3.
+Model construction and training integration remain future work; the
+physical TruckScenes Doppler period is still unresolved.
 
 \subsection{Replace the loss and backward pass in \texttt{scripts/train\_ppp.py}}
 
