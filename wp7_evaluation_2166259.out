@@ -1,0 +1,47 @@
+Setting vars
+SCRIPT_DIR       = /e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter
+REPO_DIR         = /e/project1/nxtaim-1/huber7/repos/RadarGen
+USER_PROJECT_DIR = /e/project1/nxtaim-1/huber7
+ENV_NAME         = env_radargen_jupiter
+ENV_DIR          = /e/project1/nxtaim-1/huber7/env_radargen_jupiter
+HF_HOME          = /e/project1/nxtaim-1/huber7/pretrained/huggingface
+TORCH_HOME       = /e/project1/nxtaim-1/huber7/pretrained/torch
+
+Activated env_radargen_jupiter
+ENV_DIR   = /e/project1/nxtaim-1/huber7/env_radargen_jupiter
+REPO_DIR  = /e/project1/nxtaim-1/huber7/repos/RadarGen
+CUDA_HOME = /e/software/default/stages/2025/software/CUDA/12
+HF_HOME   = /e/project1/nxtaim-1/huber7/pretrained/huggingface
+TORCH_HOME = /e/project1/nxtaim-1/huber7/pretrained/torch
+
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/bin/python
+Python 3.12.3
+Cannot import NystromAttention, you can not run original UniDepth. UniDepthV2 is available.
+======
+Loading truckscenes tables for version v1.2-trainval...
+11 attribute,
+18 calibrated_sensor,
+27 category,
+1200243 ego_motion_cabin,
+1200183 ego_motion_chassis,
+1201993 ego_pose,
+43769 instance,
+23902 sample,
+819536 sample_annotation,
+2586264 sample_data,
+598 scene,
+18 sensor,
+4 visibility,
+Done loading in 21.193 seconds.
+======
+Reverse indexing ...
+Done reverse indexing in 8.2 seconds.
+======
+[Sana] Loading model from /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+[DC-AE] Loading model from /e/project1/nxtaim-1/huber7/pretrained/dc-ae-f32c32-sana-1.1/
+Loading weights from local directory
+{"scene": "018a60086f5e441fb09f476e55948b72", "frame": 0, "gt_count": 1029, "sampled_count": 1, "ppp_expected_total_count": 1.7498969933923996, "ppp_total_count_abs_error": 1027.2501030066076, "ppp_expected_count": [1.227541789467122e-05, 0.0015918316329309118, 0.0036420297727200474, 0.0012477883641086387, 0.0013264173253086462, 0.0015048500386429012, 1.8966870610505052e-05], "ppp_expected_count_abs_error": [1.227541789467122e-05, 1.9984081683670691, 11.99635797022728, 2.9987522116358916, 7.998673582674692, 2.9984951499613572, 1.9999810331293895], "ppp_hit_probability_gt_positive": [0.001590565340954108, 0.0036354056265067076, 0.0012470101999029024, 0.0013255380226652627, 0.0015037183195838395, 1.8966690740551865e-05]}
+{"scene": "018a60086f5e441fb09f476e55948b72", "frame": 1, "gt_count": 1065, "sampled_count": 3, "ppp_expected_total_count": 1.7819333535517912, "ppp_total_count_abs_error": 1063.2180666464483, "ppp_expected_count": [1.9040911022574674e-05, 0.0015218053371183376, 0.0011998510847808, 0.004929381135214548, 0.0013444118459313974, 0.001263648874398505, 0.00167513647173951, 1.8491352311125982e-05], "ppp_expected_count_abs_error": [1.9040911022574674e-05, 0.0015218053371183376, 0.0011998510847808, 0.004929381135214548, 0.0013444118459313974, 0.9987363511256014, 2.9983248635282607, 1.8491352311125982e-05], "ppp_hit_probability_gt_positive": [0.0012628508063542785, 0.0016737342137404954]}
+{"scene": "018a60086f5e441fb09f476e55948b72", "frame": 2, "gt_count": 1078, "sampled_count": 1, "ppp_expected_total_count": 1.7594136970925827, "ppp_total_count_abs_error": 1076.2405863029073, "ppp_expected_count": [1.894196529354204e-05, 0.0015397701788076373, 0.0011596512285508348, 0.004729241984057626, 0.0013561716071392505, 0.0012643455727310267, 0.0016454776320021687, 1.8287815905871294e-05], "ppp_expected_count_abs_error": [1.894196529354204e-05, 0.0015397701788076373, 0.0011596512285508348, 0.004729241984057626, 0.9986438283928607, 4.998735654427269, 3.9983545223679977, 1.8287815905871294e-05], "ppp_hit_probability_gt_positive": [0.0013552524219964653, 0.0012635466246183615, 0.0016441245759263817]}
+PPP analytical preflight passed: samples=3, empty_clouds=0
+No empty clouds in the selected set. Sampled metrics are not tested by this preflight.

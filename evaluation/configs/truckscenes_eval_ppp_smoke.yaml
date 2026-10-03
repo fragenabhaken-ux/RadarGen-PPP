@@ -1,0 +1,28 @@
+# Structural smoke only; not a validation-quality result.
+dataset_name: truckscenes
+dataset_dir: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
+dataset_version: v1.2-trainval
+eval_split: train
+illuminated_scenes_only: false
+models:
+  - name: radargen_ppp
+    config_path: configs/RadarGen_600M_512px_TS_PPP_inference.yaml
+    checkpoint_path: output/RadarGen_PPP_WP5_smoke_2164843/checkpoints/epoch_0_step_6.pth
+    device: cuda
+    params:
+      seed: 42
+      ppp_data_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples
+      sana_checkpoint_path: /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+      null_embed_path: output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth
+      text_model_dir: /e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it
+compute_per_box_metrics: true
+mmd_report_classes:
+  - vehicle.trailer
+  - vehicle.truck
+  - vehicle.car
+keyframes_only: false
+max_samples: 3
+scene_tokens: [018a60086f5e441fb09f476e55948b72]
+output_dir: evaluation_results/truckscenes_ppp_smoke
+save_results: true
+verbose: true

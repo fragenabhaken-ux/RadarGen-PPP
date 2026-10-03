@@ -1,0 +1,123 @@
+Setting vars
+SCRIPT_DIR       = /e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter
+REPO_DIR         = /e/project1/nxtaim-1/huber7/repos/RadarGen
+USER_PROJECT_DIR = /e/project1/nxtaim-1/huber7
+ENV_NAME         = env_radargen_jupiter
+ENV_DIR          = /e/project1/nxtaim-1/huber7/env_radargen_jupiter
+HF_HOME          = /e/project1/nxtaim-1/huber7/pretrained/huggingface
+TORCH_HOME       = /e/project1/nxtaim-1/huber7/pretrained/torch
+
+Activated env_radargen_jupiter
+ENV_DIR   = /e/project1/nxtaim-1/huber7/env_radargen_jupiter
+REPO_DIR  = /e/project1/nxtaim-1/huber7/repos/RadarGen
+CUDA_HOME = /e/software/default/stages/2025/software/CUDA/12
+HF_HOME   = /e/project1/nxtaim-1/huber7/pretrained/huggingface
+TORCH_HOME = /e/project1/nxtaim-1/huber7/pretrained/torch
+
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/bin/python
+Python 3.12.3
+Cannot import NystromAttention, you can not run original UniDepth. UniDepthV2 is available.
+2026-10-04 00:20:55,213 [INFO] Logging to evaluation_results/truckscenes_ppp_smoke/logs/evaluation_2026-10-04_00-20-55.log
+2026-10-04 00:20:55,214 [INFO] Config loaded from evaluation/configs/truckscenes_eval_ppp_smoke.yaml
+2026-10-04 00:20:55,214 [INFO] Dataset: truckscenes, split: train
+2026-10-04 00:20:55,214 [INFO] Models: ['radargen_ppp']
+======
+Loading truckscenes tables for version v1.2-trainval...
+11 attribute,
+18 calibrated_sensor,
+27 category,
+1200243 ego_motion_cabin,
+1200183 ego_motion_chassis,
+1201993 ego_pose,
+43769 instance,
+23902 sample,
+819536 sample_annotation,
+2586264 sample_data,
+598 scene,
+18 sensor,
+4 visibility,
+Done loading in 20.785 seconds.
+======
+Reverse indexing ...
+Done reverse indexing in 8.3 seconds.
+======
+[Sana] Loading model from /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+2026-10-04 00:21:47,151 [INFO] SANA missing keys: ['modality_pe', 'pos_embed']; unexpected keys: []
+2026-10-04 00:21:47,167 [INFO] PPP PatchEmbedMS.proj initialized: (1152, 99, 1, 1)
+[DC-AE] Loading model from /e/project1/nxtaim-1/huber7/pretrained/dc-ae-f32c32-sana-1.1/
+Loading weights from local directory
+2026-10-04 00:22:11,583 [INFO] DC-AE output before adaptation: in=128 kernel=(3, 3) stride=(1, 1) padding=(1, 1) dtype=torch.float32 device=cuda:0
+2026-10-04 00:22:11,593 [INFO] PPP adapted shapes: input=(1152, 99, 1, 1) modality=(3, 3) output=(1, 128, 3, 3)
+2026-10-04 00:24:18,121 [INFO] PPP missing keys: []; unexpected keys: []
+2026-10-04 00:25:39,882 [INFO] Loaded model: RadarGenPPP
+2026-10-04 00:25:56,358 [INFO] Total samples to evaluate: 3
+2026-10-04 00:26:08,074 [INFO]   [1/3] RadarGenPPP
+2026-10-04 00:26:08,959 [INFO]   [2/3] RadarGenPPP
+2026-10-04 00:26:09,232 [INFO]   [3/3] RadarGenPPP
+2026-10-04 00:26:09,481 [INFO] Finalizing metrics for RadarGenPPP...
+2026-10-04 00:26:09,482 [INFO] The key 'per_box_chamfer_distance_xy' has 0 values
+2026-10-04 00:26:09,482 [INFO] The key 'per_box_chamfer_distance_xy' has 0 valid values
+2026-10-04 00:26:09,482 [INFO] The key 'per_box_chamfer_distance_all_norm' has 0 values
+2026-10-04 00:26:09,482 [INFO] The key 'per_box_chamfer_distance_all_norm' has 0 valid values
+2026-10-04 00:26:09,482 [INFO] The key 'per_box_num_points_similarity' has 23 values
+2026-10-04 00:26:09,482 [INFO] The key 'per_box_num_points_similarity' has 23 valid values
+2026-10-04 00:26:09,482 [INFO] The key 'ppp_expected_count' has 23 values
+2026-10-04 00:26:09,482 [INFO] The key 'ppp_expected_count' has 23 valid values
+2026-10-04 00:26:09,482 [INFO] The key 'ppp_expected_count_abs_error' has 23 values
+2026-10-04 00:26:09,482 [INFO] The key 'ppp_expected_count_abs_error' has 23 valid values
+2026-10-04 00:26:09,482 [INFO] The key 'ppp_hit_probability_gt_positive' has 11 values
+2026-10-04 00:26:09,482 [INFO] The key 'ppp_hit_probability_gt_positive' has 11 valid values
+2026-10-04 00:26:09,497 [INFO] Results saved to evaluation_results/truckscenes_ppp_smoke/eval_results_20261004_002609.json
+2026-10-04 00:26:09,497 [INFO] ============================================================
+2026-10-04 00:26:09,497 [INFO] EVALUATION RESULTS SUMMARY
+2026-10-04 00:26:09,497 [INFO] ============================================================
+2026-10-04 00:26:09,497 [INFO] 
+--- RadarGenPPP ---
+2026-10-04 00:26:09,497 [INFO]   chamfer_distance_all_norm_mean: 0.316660
+2026-10-04 00:26:09,497 [INFO]   chamfer_distance_all_norm_std: 0.099011
+2026-10-04 00:26:09,497 [INFO]   chamfer_distance_xy_mean: 25.434228
+2026-10-04 00:26:09,497 [INFO]   chamfer_distance_xy_std: 9.282225
+2026-10-04 00:26:09,497 [INFO]   distance_attr_f1_mean: 0.000000
+2026-10-04 00:26:09,497 [INFO]   distance_attr_f1_std: 0.000000
+2026-10-04 00:26:09,497 [INFO]   distance_attr_precision_mean: 0.000000
+2026-10-04 00:26:09,497 [INFO]   distance_attr_precision_std: 0.000000
+2026-10-04 00:26:09,497 [INFO]   distance_attr_recall_mean: 0.000000
+2026-10-04 00:26:09,498 [INFO]   distance_attr_recall_std: 0.000000
+2026-10-04 00:26:09,498 [INFO]   hit_rate: 0.000000
+2026-10-04 00:26:09,498 [INFO]   invariant_mmd_doppler_vehicle.car: nan
+2026-10-04 00:26:09,498 [INFO]   invariant_mmd_doppler_vehicle.trailer: nan
+2026-10-04 00:26:09,498 [INFO]   invariant_mmd_doppler_vehicle.truck: nan
+2026-10-04 00:26:09,498 [INFO]   invariant_mmd_rcs_vehicle.car: nan
+2026-10-04 00:26:09,498 [INFO]   invariant_mmd_rcs_vehicle.trailer: nan
+2026-10-04 00:26:09,498 [INFO]   invariant_mmd_rcs_vehicle.truck: nan
+2026-10-04 00:26:09,498 [INFO]   invariant_mmd_xy_vehicle.car: nan
+2026-10-04 00:26:09,498 [INFO]   invariant_mmd_xy_vehicle.trailer: nan
+2026-10-04 00:26:09,498 [INFO]   invariant_mmd_xy_vehicle.truck: nan
+2026-10-04 00:26:09,522 [INFO]   iou_th1_mean: 0.000000
+2026-10-04 00:26:09,522 [INFO]   iou_th1_std: 0.000000
+2026-10-04 00:26:09,522 [INFO]   miss_rate: 1.000000
+2026-10-04 00:26:09,522 [INFO]   pcl_mmd_doppler_mean: 1.909469
+2026-10-04 00:26:09,522 [INFO]   pcl_mmd_doppler_std: 0.061625
+2026-10-04 00:26:09,522 [INFO]   pcl_mmd_rcs_mean: 4.174448
+2026-10-04 00:26:09,522 [INFO]   pcl_mmd_rcs_std: 0.050411
+2026-10-04 00:26:09,522 [INFO]   pcl_mmd_xy_mean: 2.507579
+2026-10-04 00:26:09,522 [INFO]   pcl_mmd_xy_std: 1.612781
+2026-10-04 00:26:09,522 [INFO]   per_box_chamfer_distance_all_norm_mean: nan
+2026-10-04 00:26:09,522 [INFO]   per_box_chamfer_distance_all_norm_std: nan
+2026-10-04 00:26:09,522 [INFO]   per_box_chamfer_distance_xy_mean: nan
+2026-10-04 00:26:09,522 [INFO]   per_box_chamfer_distance_xy_std: nan
+2026-10-04 00:26:09,522 [INFO]   per_box_num_points_similarity_mean: 0.521739
+2026-10-04 00:26:09,522 [INFO]   per_box_num_points_similarity_std: 0.499527
+2026-10-04 00:26:09,522 [INFO]   ppp_expected_count_abs_error_mean: 1.913042
+2026-10-04 00:26:09,523 [INFO]   ppp_expected_count_abs_error_std: 2.961004
+2026-10-04 00:26:09,523 [INFO]   ppp_expected_count_mean: 0.001437
+2026-10-04 00:26:09,523 [INFO]   ppp_expected_count_std: 0.001325
+2026-10-04 00:26:09,523 [INFO]   ppp_expected_total_count_mean: 1.763748
+2026-10-04 00:26:09,523 [INFO]   ppp_expected_total_count_std: 0.013433
+2026-10-04 00:26:09,523 [INFO]   ppp_hit_probability_gt_positive_mean: 0.001502
+2026-10-04 00:26:09,523 [INFO]   ppp_hit_probability_gt_positive_std: 0.000800
+2026-10-04 00:26:09,523 [INFO]   ppp_total_count_abs_error_mean: 1055.569585
+2026-10-04 00:26:09,523 [INFO]   ppp_total_count_abs_error_std: 20.718612
+2026-10-04 00:26:09,523 [INFO]   total_fn_boxes: 11.000000
+2026-10-04 00:26:09,523 [INFO]   total_fp_boxes: 0.000000
+2026-10-04 00:26:09,523 [INFO]   total_hits: 0.000000

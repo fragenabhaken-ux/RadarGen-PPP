@@ -1,0 +1,410 @@
+--- a/evaluation/evaluator.py
++++ b/evaluation/evaluator.py
+@@ -53,7 +53,7 @@
+         # Import models subpackage to trigger registration
+         import evaluation.models  # noqa: F401
+         for mc in config.models:
+-            model_wrapper = get_model(mc.name, mc, self.adapter)
++            model_wrapper = get_model(mc.name, mc, self.adapter, evaluation_config=config)
+             self.models.append(model_wrapper)
+             logger.info(f"Loaded model: {model_wrapper.name}")
+ 
+@@ -145,6 +145,8 @@
+         # Gather samples
+         all_samples = self._gather_samples()
+         logger.info(f"Total samples to evaluate: {len(all_samples)}")
++        if not all_samples:
++            raise ValueError("No evaluation samples selected")
+ 
+         with torch.no_grad():
+             for idx, (sample_data, sample_data_next, bounding_boxes, scene_token, frame_idx) in tqdm(
+@@ -160,10 +162,25 @@
+                         self.adapter, sample_data, sample_data_next, scene_token, frame_idx
+                     )
+ 
++                    if hasattr(mw, "get_last_ppp_fields") and len(syn_pcl) == 0:
++                        raise RuntimeError(
++                            f"Empty PPP realization: scene={scene_token}, frame={frame_idx}. "
++                            "Evaluation stopped; no resampling. Define an empty-cloud metric policy "
++                            "before reporting final results. Run the PPP preflight to count empties."
++                        )
++
+                     metrics = compute_all_metrics(
+                         syn_pcl, gt_pcl, bounding_boxes, norm_config, mmd_loss, self.device,
+                     )
+                     aggregate_metrics(aggregators[mw.name], metrics, mmd_report_classes)
++                    if hasattr(mw, "get_last_ppp_fields"):
++                        from evaluation.ppp_metrics import (make_ppp_grid_xy,
++                            compute_ppp_count_metrics, aggregate_ppp_metrics)
++                        fields = mw.get_last_ppp_fields(scene_token, frame_idx)
++                        mass = fields["cell_mass_grid"]
++                        grid = make_ppp_grid_xy(*mass.shape, fields["coordinate_range"])
++                        analytical = compute_ppp_count_metrics(mass, gt_pcl, bounding_boxes, grid)
++                        aggregate_ppp_metrics(aggregators[mw.name], analytical)
+ 
+         # Finalise
+         results: Dict[str, dict] = {}
+@@ -194,6 +211,8 @@
+ 
+         if self.config.keyframes_only:
+             for scene_token, indexed_keyframes in self.adapter.iter_keyframes_indexed(split):
++                if self.config.scene_tokens is not None and scene_token not in self.config.scene_tokens:
++                    continue
+                 for sample, frame_idx in indexed_keyframes:
+                     sample_data = self._as_sample_data(sample)
+                     sample_data_next = self.adapter.get_next_immediate_sample(sample_data)
+@@ -214,6 +233,8 @@
+                         return samples
+         else:
+             for scene_token, scene_samples in self.adapter.iter_scenes(split):
++                if self.config.scene_tokens is not None and scene_token not in self.config.scene_tokens:
++                    continue
+                 for frame_idx in range(len(scene_samples) - 1):
+                     sample_data = self._as_sample_data(scene_samples[frame_idx])
+                     sample_data_next = self._as_sample_data(scene_samples[frame_idx + 1])
+--- a/evaluation/config.py
++++ b/evaluation/config.py
+@@ -31,6 +31,7 @@
+     )
+     keyframes_only: bool = True
+     max_samples: Optional[int] = None
++    scene_tokens: Optional[List[str]] = None
+     output_dir: str = "evaluation_results"
+     save_results: bool = True
+     verbose: bool = True
+--- a/evaluation/models/__init__.py
++++ b/evaluation/models/__init__.py
+@@ -1,3 +1,5 @@
+ """Evaluation model wrappers — import submodules to trigger registration."""
+ 
+ from evaluation.models import radargen_wrapper  # noqa: F401
++
++from evaluation.models import radargen_ppp_wrapper  # noqa: F401
+--- /dev/null
++++ b/evaluation/models/radargen_ppp_wrapper.py
+@@ -0,0 +1,75 @@
++"""PPP evaluation with explicit HDF5 conditioning and identity-checked fields."""
++import numpy as np
++from evaluation.models.registry import register_model
++from evaluation.protocols import ModelWrapper
++
++
++@register_model('radargen_ppp')
++def create_radargen_ppp(config, adapter, **kwargs):
++    return RadarGenPPPWrapper(config, adapter, evaluation_config=kwargs.get('evaluation_config'))
++
++
++class RadarGenPPPWrapper(ModelWrapper):
++    def __init__(self, config, adapter, *, evaluation_config=None):
++        import pyrallis
++        from diffusion.utils.config import SanaConfig
++        from radargen.inference.ppp_pipeline import RadarGenPPPPipeline
++        with open(config.config_path) as stream:
++            self.config = pyrallis.load(SanaConfig, stream)
++        self.adapter = adapter
++        params = config.params or {}
++        self.split = evaluation_config.eval_split if evaluation_config else params.get('eval_split', 'val')
++        self.hdf5_root = params.get('ppp_data_dir', self.config.data.ppp_data_dir)
++        if params.get('bev_maps_dir'):
++            raise ValueError('Use ppp_data_dir for HDF5; legacy separate-map inference is not implemented here')
++        for key, value in vars(adapter.normalization).items():
++            if self.config.data.extra.get(key) != value:
++                raise ValueError(f'PPP/evaluator normalization mismatch: {key}')
++        if evaluation_config and (evaluation_config.dataset_name != self.config.data.extra['dataset_name']
++                                  or evaluation_config.dataset_version != self.config.data.extra['dataset_version']):
++            raise ValueError('PPP/evaluator dataset mismatch')
++        self.pipeline = RadarGenPPPPipeline.from_config(self.config,
++            checkpoint_path=config.checkpoint_path,
++            sana_checkpoint_path=params['sana_checkpoint_path'],
++            null_embed_path=params['null_embed_path'], text_model_dir=params['text_model_dir'],
++            device=config.device, seed=params.get('seed', 42))
++        self._dataset = None
++        self._scene = None
++        self._cached = None
++
++    @property
++    def name(self):
++        return 'RadarGenPPP'
++
++    def predict_point_cloud(self, adapter, sample_data, sample_data_next=None,
++                            scene_token=None, frame_idx=None):
++        from radargen.training.radargen_ppp_dataset import RadarGenPPPDataset
++        from radargen.ppp.sampling import ppp_cell_masses
++        self._cached = None
++        if adapter is not self.adapter or scene_token is None or frame_idx is None or sample_data_next is None:
++            raise ValueError('PPP HDF5 evaluation requires the configured adapter and full pair identity')
++        if self._scene != scene_token:
++            self._dataset = RadarGenPPPDataset(adapter, ppp_data_dir=self.hdf5_root,
++                split=self.split, processing_signature=self.config.data.extra['ppp_processing_signature'],
++                scene_tokens=[scene_token], resolution=self.config.model.image_size)
++            self._scene = scene_token
++        if frame_idx < 0 or frame_idx >= len(self._dataset):
++            raise ValueError('PPP frame index outside completed pair inventory')
++        # Compare the actual pair, not just the scene and integer index.
++        from jsc_jupiter.hdf5_samples import pair_metadata
++        expected = self._dataset.frame_index[frame_idx][1]
++        supplied = pair_metadata(adapter, sample_data, sample_data_next, self.split)
++        for key, value in supplied.items():
++            if key not in expected or not np.array_equal(expected[key], value):
++                raise ValueError(f'Evaluator/HDF5 pair identity mismatch: {key}')
++        fields, _ = self.pipeline.predict_dataset_sample(self._dataset, frame_idx)
++        points = self.pipeline.sample_fields(fields)
++        self._cached = (scene_token, frame_idx, dict(cell_mass_grid=ppp_cell_masses(fields['log_intensity']).numpy(),
++                                                     coordinate_range=self.pipeline.coordinate_range))
++        return points
++
++    def get_last_ppp_fields(self, scene_token, frame_idx):
++        if self._cached is None or self._cached[:2] != (scene_token, frame_idx):
++            raise ValueError('Requested PPP fields do not match the last prediction')
++        fields = self._cached[2]
++        return dict(cell_mass_grid=fields['cell_mass_grid'].copy(), coordinate_range=fields['coordinate_range'])
+--- /dev/null
++++ b/evaluation/ppp_metrics.py
+@@ -0,0 +1,61 @@
++"""Analytical discrete-PPP counts, separate from sampled RadarGen metrics."""
++import numpy as np
++from evaluation.box_utils import get_points_in_box
++
++
++def make_ppp_grid_xy(H, W, coordinate_range):
++    if H <= 0 or W <= 0 or not np.isfinite(coordinate_range) or coordinate_range <= 0:
++        raise ValueError('Invalid grid geometry')
++    r, c = np.indices((H, W))
++    R = float(coordinate_range)
++    return np.column_stack((((c + .5) / W * 2 * R - R).ravel(),
++                            ((H - r - .5) / H * 2 * R - R).ravel()))
++
++
++def _masses(value):
++    value = np.asarray(value, dtype=np.float64)
++    if value.ndim != 2 or value.size == 0 or not np.isfinite(value).all() or (value < 0).any():
++        raise ValueError('Expected finite nonnegative 2D cell masses')
++    if not np.isfinite(value.sum()):
++        raise ValueError('Nonfinite total intensity')
++    return value
++
++
++def expected_total_count(cell_mass_grid):
++    return float(_masses(cell_mass_grid).sum())
++
++
++def expected_count_in_box(cell_mass_grid, box, grid_xy):
++    mass = _masses(cell_mass_grid)
++    grid_xy = np.asarray(grid_xy)
++    if grid_xy.shape != (mass.size, 2) or not np.isfinite(grid_xy).all():
++        raise ValueError('Grid coordinates must match flattened masses')
++    _, mask = get_points_in_box(grid_xy, box.bottom_corners())
++    return float(mass.ravel()[mask].sum())
++
++
++def compute_ppp_count_metrics(cell_mass_grid, gt_pcl, bounding_boxes, grid_xy):
++    mass = _masses(cell_mass_grid)
++    gt = np.asarray(gt_pcl)
++    if gt.ndim != 2 or gt.shape[1] != 4 or not np.isfinite(gt).all():
++        raise ValueError('Expected continuous evaluator GT with shape (N,4)')
++    total = expected_total_count(mass)
++    result = dict(ppp_expected_total_count=total,
++                  ppp_total_count_abs_error=abs(total - len(gt)),
++                  ppp_expected_count=[], ppp_expected_count_abs_error=[],
++                  ppp_hit_probability_gt_positive=[])
++    for box in bounding_boxes:
++        expected = expected_count_in_box(mass, box, grid_xy)
++        inside, _ = get_points_in_box(gt, box.bottom_corners())
++        result['ppp_expected_count'].append(expected)
++        result['ppp_expected_count_abs_error'].append(abs(expected - len(inside)))
++        if len(inside):
++            result['ppp_hit_probability_gt_positive'].append(float(-np.expm1(-expected)))
++    return result
++
++
++def aggregate_ppp_metrics(aggregator, metrics):
++    for key in ('ppp_expected_total_count', 'ppp_total_count_abs_error'):
++        aggregator['per_sample_scores'].setdefault(key, []).append(metrics[key])
++    for key in ('ppp_expected_count', 'ppp_expected_count_abs_error', 'ppp_hit_probability_gt_positive'):
++        aggregator['per_box_scores'].setdefault(key, []).extend(metrics[key])
+--- /dev/null
++++ b/evaluation/configs/truckscenes_eval_ppp.yaml
+@@ -0,0 +1,26 @@
++# Full validation configuration: choose a trained checkpoint before quality evaluation.
++dataset_name: truckscenes
++dataset_dir: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
++dataset_version: v1.2-trainval
++eval_split: val
++illuminated_scenes_only: true
++models:
++  - name: radargen_ppp
++    config_path: configs/RadarGen_600M_512px_TS_PPP_inference.yaml
++    checkpoint_path: output/RadarGen_PPP_WP5_smoke_2164843/checkpoints/epoch_0_step_6.pth
++    device: cuda
++    params:
++      seed: 42
++      ppp_data_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples
++      sana_checkpoint_path: /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
++      null_embed_path: output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth
++      text_model_dir: /e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it
++compute_per_box_metrics: true
++mmd_report_classes:
++  - vehicle.trailer
++  - vehicle.truck
++  - vehicle.car
++keyframes_only: true
++output_dir: evaluation_results/truckscenes_ppp
++save_results: true
++verbose: true
+--- /dev/null
++++ b/evaluation/configs/truckscenes_eval_ppp_smoke.yaml
+@@ -0,0 +1,28 @@
++# Structural smoke only; not a validation-quality result.
++dataset_name: truckscenes
++dataset_dir: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
++dataset_version: v1.2-trainval
++eval_split: train
++illuminated_scenes_only: false
++models:
++  - name: radargen_ppp
++    config_path: configs/RadarGen_600M_512px_TS_PPP_inference.yaml
++    checkpoint_path: output/RadarGen_PPP_WP5_smoke_2164843/checkpoints/epoch_0_step_6.pth
++    device: cuda
++    params:
++      seed: 42
++      ppp_data_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples
++      sana_checkpoint_path: /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
++      null_embed_path: output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth
++      text_model_dir: /e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it
++compute_per_box_metrics: true
++mmd_report_classes:
++  - vehicle.trailer
++  - vehicle.truck
++  - vehicle.car
++keyframes_only: false
++max_samples: 3
++scene_tokens: [018a60086f5e441fb09f476e55948b72]
++output_dir: evaluation_results/truckscenes_ppp_smoke
++save_results: true
++verbose: true
+--- /dev/null
++++ b/evaluation/scripts/check_ppp_evaluation.py
+@@ -0,0 +1,47 @@
++#!/usr/bin/env python3
++"""PPP preflight: count empties and check analytical integration; no sampled metrics."""
++import argparse
++import json
++from pathlib import Path
++import sys
++sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
++
++
++def main():
++    from evaluation.config import EvaluationConfig
++    from evaluation.evaluator import Evaluator
++    from evaluation.ppp_metrics import make_ppp_grid_xy, compute_ppp_count_metrics, aggregate_ppp_metrics
++    from evaluation.aggregation import create_aggregator
++    parser = argparse.ArgumentParser()
++    parser.add_argument('--config', default='evaluation/configs/truckscenes_eval_ppp_smoke.yaml')
++    args = parser.parse_args()
++    config = EvaluationConfig.from_yaml(args.config)
++    if len(config.models) != 1 or config.models[0].name != 'radargen_ppp':
++        raise ValueError('PPP preflight requires exactly one PPP model')
++    evaluator = Evaluator(config)
++    model = evaluator.models[0]
++    samples = evaluator._gather_samples()
++    if not samples:
++        raise ValueError('No samples selected')
++    aggregator = create_aggregator()
++    empty = 0
++    for current, following, boxes, scene, frame in samples:
++        gt = evaluator._get_gt_pcl(current)
++        points = model.predict_point_cloud(evaluator.adapter, current, following, scene, frame)
++        fields = model.get_last_ppp_fields(scene, frame)
++        mass = fields['cell_mass_grid']
++        metrics = compute_ppp_count_metrics(mass, gt, boxes, make_ppp_grid_xy(*mass.shape, fields['coordinate_range']))
++        aggregate_ppp_metrics(aggregator, metrics)
++        empty += len(points) == 0
++        print(json.dumps(dict(scene=scene, frame=frame, gt_count=len(gt), sampled_count=len(points),
++                              **metrics)), flush=True)
++    print(f'PPP analytical preflight passed: samples={len(samples)}, empty_clouds={empty}', flush=True)
++    if empty:
++        print('Sampled-metric evaluation is blocked until an explicit empty-cloud policy is defined.', flush=True)
++        return 2
++    print('No empty clouds in the selected set. Sampled metrics are not tested by this preflight.', flush=True)
++    return 0
++
++
++if __name__ == '__main__':
++    sys.exit(main())
+--- /dev/null
++++ b/tests/test_ppp_metrics.py
+@@ -0,0 +1,52 @@
++"""Small CPU tests; only NumPy and Matplotlib required."""
++import sys
++from pathlib import Path
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++import unittest
++import numpy as np
++from evaluation.ppp_metrics import make_ppp_grid_xy, expected_count_in_box, compute_ppp_count_metrics, aggregate_ppp_metrics
++
++
++class Box:
++    def __init__(self, corners):
++        self.corners = np.vstack((np.array(corners).T, np.zeros(4)))
++    def bottom_corners(self):
++        return self.corners
++
++
++class MetricsTests(unittest.TestCase):
++    def test_geometry_and_rotated_box(self):
++        grid = make_ppp_grid_xy(3, 3, 1.5)
++        np.testing.assert_array_equal(grid[[0, -1]], [[-1, 1], [1, -1]])
++        # Diamond excludes bounding-rectangle corners but includes center/axes.
++        box = Box([[0, 1.4], [1.4, 0], [0, -1.4], [-1.4, 0]])
++        self.assertEqual(expected_count_in_box(np.ones((3, 3)), box, grid), 5.)
++
++    def test_continuous_gt_counts_positive_subset_and_aggregation(self):
++        mass = np.ones((3, 3))
++        grid = make_ppp_grid_xy(3, 3, 1.5)
++        center = Box([[-.4, -.4], [.4, -.4], [.4, .4], [-.4, .4]])
++        outside = Box([[2, 2], [3, 2], [3, 3], [2, 3]])
++        # Two distinct GT detections in the same training pixel remain TWO.
++        gt = np.array([[.1, .1, 0, 0], [.2, .2, 0, 0]])
++        m = compute_ppp_count_metrics(mass, gt, [center, outside], grid)
++        self.assertEqual(m['ppp_total_count_abs_error'], 7.)
++        self.assertEqual(m['ppp_expected_count_abs_error'], [1., 0.])
++        np.testing.assert_allclose(m['ppp_hit_probability_gt_positive'], [-np.expm1(-1.)])
++        agg = {'per_sample_scores': {'baseline': [12]}, 'per_box_scores': {}}
++        aggregate_ppp_metrics(agg, m)
++        self.assertEqual(agg['per_sample_scores']['baseline'], [12])
++        self.assertEqual(agg['per_sample_scores']['ppp_expected_total_count'], [9.])
++
++    def test_empty_boxes_zero_and_invalid_mass(self):
++        grid = make_ppp_grid_xy(1, 1, 1.)
++        m = compute_ppp_count_metrics(np.zeros((1, 1)), np.empty((0, 4)), [], grid)
++        self.assertEqual(m['ppp_expected_total_count'], 0.)
++        self.assertEqual(m['ppp_hit_probability_gt_positive'], [])
++        for bad in (-1., np.nan, np.inf):
++            with self.assertRaises(ValueError):
++                compute_ppp_count_metrics(np.array([[bad]]), np.empty((0, 4)), [], grid)
++
++
++if __name__ == '__main__':
++    unittest.main()
+--- /dev/null
++++ b/jsc_jupiter/wp7_evaluation_smoke.sbatch
+@@ -0,0 +1,18 @@
++#!/bin/bash
++#SBATCH --job-name=ppp_wp7
++#SBATCH --account=nxtaim-1
++#SBATCH --partition=booster
++#SBATCH --nodes=1
++#SBATCH --ntasks=1
++#SBATCH --cpus-per-task=72
++#SBATCH --gres=gpu:1
++#SBATCH --time=00:15:00
++#SBATCH --output=wp7_evaluation_%j.out
++#SBATCH --error=wp7_evaluation_%j.err
++set -e
++cd /e/project1/nxtaim-1/huber7/repos/RadarGen
++source jsc_jupiter/activate_jupiter.sh
++export OMP_NUM_THREADS=8
++export HF_HUB_OFFLINE=1
++export TRANSFORMERS_OFFLINE=1
++srun --cpus-per-task=72 --cpu-bind=verbose python -u evaluation/scripts/check_ppp_evaluation.py

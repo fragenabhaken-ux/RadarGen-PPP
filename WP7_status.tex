@@ -1,0 +1,25 @@
+\paragraph{Work package 7 implementation status.}
+A PPP evaluation wrapper and separate analytical metrics module have been
+prepared. The wrapper reuses validated HDF5 conditioning, verifies pair identity,
+and caches detached cell masses for the last prediction. The evaluator adds PPP
+metrics only for wrappers exposing this cache; existing sampled metric formulas
+and static metric-key lists are unchanged. Analytical count errors use the
+continuous evaluator ground truth and the existing rotated-box membership helper.
+Analytical hit probabilities are aggregated only over GT-positive boxes.
+
+Three focused NumPy/Matplotlib CPU tests passed for geometry, rotated boxes,
+continuous GT counts, analytical hit probability, aggregation, and invalid inputs.
+Python and shell syntax checks passed. Pretrained wrapper integration, original
+sampled metrics, and baseline runtime compatibility remain unverified on JUPITER.
+A three-sample preflight script counts empty clouds without resampling and checks
+analytical integration. It does not test the original sampled metrics. Empty
+PPP realizations stop ordinary metric evaluation until an explicit policy is
+chosen. The initial preflight uses the six-update smoke checkpoint and is not a
+quality evaluation. A complete selected-set preflight is required before final
+evaluation; three samples do not establish absence of empty clouds elsewhere.
+
+The initial wrapper supports explicit HDF5 conditioning only. Legacy separate-map
+and raw-camera condition generation are not implemented. It inherits the training
+dataset's rejection of empty GT frames. The provided validation configuration is
+PPP-only; side-by-side baseline evaluation requires a separately configured
+RadarGen checkpoint and conditioning path on the same selected samples.

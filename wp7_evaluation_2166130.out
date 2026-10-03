@@ -1,0 +1,43 @@
+Setting vars
+SCRIPT_DIR       = /e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter
+REPO_DIR         = /e/project1/nxtaim-1/huber7/repos/RadarGen
+USER_PROJECT_DIR = /e/project1/nxtaim-1/huber7
+ENV_NAME         = env_radargen_jupiter
+ENV_DIR          = /e/project1/nxtaim-1/huber7/env_radargen_jupiter
+HF_HOME          = /e/project1/nxtaim-1/huber7/pretrained/huggingface
+TORCH_HOME       = /e/project1/nxtaim-1/huber7/pretrained/torch
+
+Activated env_radargen_jupiter
+ENV_DIR   = /e/project1/nxtaim-1/huber7/env_radargen_jupiter
+REPO_DIR  = /e/project1/nxtaim-1/huber7/repos/RadarGen
+CUDA_HOME = /e/software/default/stages/2025/software/CUDA/12
+HF_HOME   = /e/project1/nxtaim-1/huber7/pretrained/huggingface
+TORCH_HOME = /e/project1/nxtaim-1/huber7/pretrained/torch
+
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/bin/python
+Python 3.12.3
+Cannot import NystromAttention, you can not run original UniDepth. UniDepthV2 is available.
+======
+Loading truckscenes tables for version v1.2-trainval...
+11 attribute,
+18 calibrated_sensor,
+27 category,
+1200243 ego_motion_cabin,
+1200183 ego_motion_chassis,
+1201993 ego_pose,
+43769 instance,
+23902 sample,
+819536 sample_annotation,
+2586264 sample_data,
+598 scene,
+18 sensor,
+4 visibility,
+Done loading in 22.874 seconds.
+======
+Reverse indexing ...
+Done reverse indexing in 8.2 seconds.
+======
+[Sana] Loading model from /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+[DC-AE] Loading model from /e/project1/nxtaim-1/huber7/pretrained/dc-ae-f32c32-sana-1.1/
+Loading weights from local directory
+{"scene": "018a60086f5e441fb09f476e55948b72", "frame": 0, "gt_count": 1029, "sampled_count": 1, "ppp_expected_total_count": 1.7498969933923996, "ppp_total_count_abs_error": 1027.2501030066076, "ppp_expected_count": [1.227541789467122e-05, 0.0015918316329309118, 0.0036420297727200474, 0.0012477883641086387, 0.0013264173253086462, 0.0015048500386429012, 1.8966870610505052e-05], "ppp_expected_count_abs_error": [1.227541789467122e-05, 1.9984081683670691, 11.99635797022728, 2.9987522116358916, 7.998673582674692, 2.9984951499613572, 1.9999810331293895], "ppp_hit_probability_gt_positive": [0.001590565340954108, 0.0036354056265067076, 0.0012470101999029024, 0.0013255380226652627, 0.0015037183195838395, 1.8966690740551865e-05]}

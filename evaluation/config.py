@@ -31,6 +31,7 @@ class EvaluationConfig:
     )
     keyframes_only: bool = True
     max_samples: Optional[int] = None
+    scene_tokens: Optional[List[str]] = None
     output_dir: str = "evaluation_results"
     save_results: bool = True
     verbose: bool = True

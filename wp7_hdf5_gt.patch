@@ -1,0 +1,145 @@
+--- a/evaluation/models/radargen_ppp_wrapper.py
++++ b/evaluation/models/radargen_ppp_wrapper.py
+@@ -41,11 +41,8 @@
+     def name(self):
+         return 'RadarGenPPP'
+ 
+-    def predict_point_cloud(self, adapter, sample_data, sample_data_next=None,
+-                            scene_token=None, frame_idx=None):
++    def _prepare_pair(self, adapter, sample_data, sample_data_next, scene_token, frame_idx):
+         from radargen.training.radargen_ppp_dataset import RadarGenPPPDataset
+-        from radargen.ppp.sampling import ppp_cell_masses
+-        self._cached = None
+         if adapter is not self.adapter or scene_token is None or frame_idx is None or sample_data_next is None:
+             raise ValueError('PPP HDF5 evaluation requires the configured adapter and full pair identity')
+         if self._scene != scene_token:
+@@ -62,6 +59,27 @@
+         for key, value in supplied.items():
+             if key not in expected or not np.array_equal(expected[key], value):
+                 raise ValueError(f'Evaluator/HDF5 pair identity mismatch: {key}')
++
++    def get_ground_truth_point_cloud(self, adapter, sample_data, sample_data_next,
++                                     scene_token, frame_idx):
++        import h5py
++        from radargen.training.radargen_ppp_dataset import validate_ppp_metadata
++        from evaluation.ppp_ground_truth import read_continuous_targets
++        self._prepare_pair(adapter, sample_data, sample_data_next, scene_token, frame_idx)
++        path, expected, size, mtime = self._dataset.frame_index[frame_idx]
++        stat = path.stat()
++        if path.is_symlink() or (stat.st_size, stat.st_mtime_ns) != (size, mtime):
++            raise ValueError(f'{path}: indexed immutable sample changed')
++        with h5py.File(path, 'r') as handle:
++            validate_ppp_metadata(handle, expected, resolution=self._dataset.resolution,
++                point_limit=self._dataset.point_limit, normalization=self._dataset.normalization)
++            return read_continuous_targets(handle, self._dataset.point_limit)
++
++    def predict_point_cloud(self, adapter, sample_data, sample_data_next=None,
++                            scene_token=None, frame_idx=None):
++        from radargen.ppp.sampling import ppp_cell_masses
++        self._cached = None
++        self._prepare_pair(adapter, sample_data, sample_data_next, scene_token, frame_idx)
+         fields, _ = self.pipeline.predict_dataset_sample(self._dataset, frame_idx)
+         points = self.pipeline.sample_fields(fields)
+         self._cached = (scene_token, frame_idx, dict(cell_mass_grid=ppp_cell_masses(fields['log_intensity']).numpy(),
+--- a/evaluation/evaluator.py
++++ b/evaluation/evaluator.py
+@@ -126,6 +126,24 @@
+         # columns: [x, y, z, vx, vy, vz, rcs, doppler] → [x, y, rcs, doppler]
+         return pcl_filtered[:, [0, 1, 6, 7]]
+ 
++    def _get_evaluation_gt(self, sample_data, sample_data_next, scene_token, frame_idx):
++        """Use validated continuous HDF5 targets when a PPP provider is present.
++
++        All compared models receive the same ground truth. Baseline-only runs
++        retain their original raw-radar loading path.
++        """
++        providers = [mw for mw in self.models if hasattr(mw, "get_ground_truth_point_cloud")]
++        if not providers:
++            return self._get_gt_pcl(sample_data)
++        ground_truth = providers[0].get_ground_truth_point_cloud(
++            self.adapter, sample_data, sample_data_next, scene_token, frame_idx)
++        for provider in providers[1:]:
++            other = provider.get_ground_truth_point_cloud(
++                self.adapter, sample_data, sample_data_next, scene_token, frame_idx)
++            if not np.array_equal(ground_truth, other):
++                raise ValueError("PPP providers disagree on evaluation ground truth")
++        return ground_truth
++
+     # ------------------------------------------------------------------
+     # Main evaluation loop
+     # ------------------------------------------------------------------
+@@ -154,7 +172,7 @@
+                 total=len(all_samples),
+                 desc="Evaluating",
+             ):
+-                gt_pcl = self._get_gt_pcl(sample_data)
++                gt_pcl = self._get_evaluation_gt(sample_data, sample_data_next, scene_token, frame_idx)
+ 
+                 for mw in self.models:
+                     logger.info(f"  [{idx+1}/{len(all_samples)}] {mw.name}")
+--- a/evaluation/scripts/check_ppp_evaluation.py
++++ b/evaluation/scripts/check_ppp_evaluation.py
+@@ -26,7 +26,7 @@
+     aggregator = create_aggregator()
+     empty = 0
+     for current, following, boxes, scene, frame in samples:
+-        gt = evaluator._get_gt_pcl(current)
++        gt = evaluator._get_evaluation_gt(current, following, scene, frame)
+         points = model.predict_point_cloud(evaluator.adapter, current, following, scene, frame)
+         fields = model.get_last_ppp_fields(scene, frame)
+         mass = fields['cell_mass_grid']
+--- /dev/null
++++ b/evaluation/ppp_ground_truth.py
+@@ -0,0 +1,21 @@
++"""Read physical radar detections without rasterization or deduplication."""
++import numpy as np
++
++
++def read_continuous_targets(handle, coordinate_range):
++    """Call only after validating the sample's identity and preprocessing metadata."""
++    group = handle['ppp_targets']
++    xy, rcs, doppler = (group[key][()] for key in ('xy', 'rcs', 'doppler'))
++    n = len(rcs)
++    if xy.shape != (n, 2) or rcs.shape != (n,) or doppler.shape != (n,):
++        raise ValueError('Invalid continuous radar target shapes')
++    points = np.column_stack((xy, rcs, doppler))
++    if not np.isfinite(points).all():
++        raise ValueError('Nonfinite continuous radar target')
++    if not np.isfinite(coordinate_range) or coordinate_range <= 0:
++        raise ValueError('Invalid coordinate range')
++    if not (np.abs(xy) < coordinate_range).all():
++        raise ValueError('Continuous radar target outside strict square range')
++    if not n:
++        raise ValueError('Empty ground truth; evaluation policy unresolved')
++    return points
+--- /dev/null
++++ b/tests/test_ppp_ground_truth.py
+@@ -0,0 +1,28 @@
++"""Small CPU tests for continuous HDF5 evaluation targets."""
++import sys
++from pathlib import Path
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++import unittest
++import h5py
++import numpy as np
++from evaluation.ppp_ground_truth import read_continuous_targets
++
++
++class GroundTruthTests(unittest.TestCase):
++    def test_preserves_coordinates_marks_and_multiplicity(self):
++        with h5py.File('test', 'w', driver='core', backing_store=False) as h:
++            g = h.create_group('ppp_targets')
++            # Identical locations must remain two distinct detections.
++            expected = np.array([[.123, -.456, -7, 2], [.123, -.456, 8, -3]], dtype=np.float32)
++            g['xy'], g['rcs'], g['doppler'] = expected[:, :2], expected[:, 2], expected[:, 3]
++            np.testing.assert_array_equal(read_continuous_targets(h, 50), expected)
++            g['xy'][0, 0] = 50
++            with self.assertRaisesRegex(ValueError, 'range'):
++                read_continuous_targets(h, 50)
++            g['xy'][0, 0] = np.nan
++            with self.assertRaisesRegex(ValueError, 'Nonfinite'):
++                read_continuous_targets(h, 50)
++
++
++if __name__ == '__main__':
++    unittest.main()

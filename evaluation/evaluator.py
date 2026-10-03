@@ -53,7 +53,7 @@ class Evaluator:
         # Import models subpackage to trigger registration
         import evaluation.models  # noqa: F401
         for mc in config.models:
-            model_wrapper = get_model(mc.name, mc, self.adapter)
+            model_wrapper = get_model(mc.name, mc, self.adapter, evaluation_config=config)
             self.models.append(model_wrapper)
             logger.info(f"Loaded model: {model_wrapper.name}")
 
@@ -126,6 +126,24 @@ class Evaluator:
         # columns: [x, y, z, vx, vy, vz, rcs, doppler] → [x, y, rcs, doppler]
         return pcl_filtered[:, [0, 1, 6, 7]]
 
+    def _get_evaluation_gt(self, sample_data, sample_data_next, scene_token, frame_idx):
+        """Use validated continuous HDF5 targets when a PPP provider is present.
+
+        All compared models receive the same ground truth. Baseline-only runs
+        retain their original raw-radar loading path.
+        """
+        providers = [mw for mw in self.models if hasattr(mw, "get_ground_truth_point_cloud")]
+        if not providers:
+            return self._get_gt_pcl(sample_data)
+        ground_truth = providers[0].get_ground_truth_point_cloud(
+            self.adapter, sample_data, sample_data_next, scene_token, frame_idx)
+        for provider in providers[1:]:
+            other = provider.get_ground_truth_point_cloud(
+                self.adapter, sample_data, sample_data_next, scene_token, frame_idx)
+            if not np.array_equal(ground_truth, other):
+                raise ValueError("PPP providers disagree on evaluation ground truth")
+        return ground_truth
+
     # ------------------------------------------------------------------
     # Main evaluation loop
     # ------------------------------------------------------------------
@@ -145,6 +163,8 @@ class Evaluator:
         # Gather samples
         all_samples = self._gather_samples()
         logger.info(f"Total samples to evaluate: {len(all_samples)}")
+        if not all_samples:
+            raise ValueError("No evaluation samples selected")
 
         with torch.no_grad():
             for idx, (sample_data, sample_data_next, bounding_boxes, scene_token, frame_idx) in tqdm(
@@ -152,7 +172,7 @@ class Evaluator:
                 total=len(all_samples),
                 desc="Evaluating",
             ):
-                gt_pcl = self._get_gt_pcl(sample_data)
+                gt_pcl = self._get_evaluation_gt(sample_data, sample_data_next, scene_token, frame_idx)
 
                 for mw in self.models:
                     logger.info(f"  [{idx+1}/{len(all_samples)}] {mw.name}")
@@ -160,10 +180,25 @@ class Evaluator:
                         self.adapter, sample_data, sample_data_next, scene_token, frame_idx
                     )
 
+                    if hasattr(mw, "get_last_ppp_fields") and len(syn_pcl) == 0:
+                        raise RuntimeError(
+                            f"Empty PPP realization: scene={scene_token}, frame={frame_idx}. "
+                            "Evaluation stopped; no resampling. Define an empty-cloud metric policy "
+                            "before reporting final results. Run the PPP preflight to count empties."
+                        )
+
                     metrics = compute_all_metrics(
                         syn_pcl, gt_pcl, bounding_boxes, norm_config, mmd_loss, self.device,
                     )
                     aggregate_metrics(aggregators[mw.name], metrics, mmd_report_classes)
+                    if hasattr(mw, "get_last_ppp_fields"):
+                        from evaluation.ppp_metrics import (make_ppp_grid_xy,
+                            compute_ppp_count_metrics, aggregate_ppp_metrics)
+                        fields = mw.get_last_ppp_fields(scene_token, frame_idx)
+                        mass = fields["cell_mass_grid"]
+                        grid = make_ppp_grid_xy(*mass.shape, fields["coordinate_range"])
+                        analytical = compute_ppp_count_metrics(mass, gt_pcl, bounding_boxes, grid)
+                        aggregate_ppp_metrics(aggregators[mw.name], analytical)
 
         # Finalise
         results: Dict[str, dict] = {}
@@ -194,6 +229,8 @@ class Evaluator:
 
         if self.config.keyframes_only:
             for scene_token, indexed_keyframes in self.adapter.iter_keyframes_indexed(split):
+                if self.config.scene_tokens is not None and scene_token not in self.config.scene_tokens:
+                    continue
                 for sample, frame_idx in indexed_keyframes:
                     sample_data = self._as_sample_data(sample)
                     sample_data_next = self.adapter.get_next_immediate_sample(sample_data)
@@ -214,6 +251,8 @@ class Evaluator:
                         return samples
         else:
             for scene_token, scene_samples in self.adapter.iter_scenes(split):
+                if self.config.scene_tokens is not None and scene_token not in self.config.scene_tokens:
+                    continue
                 for frame_idx in range(len(scene_samples) - 1):
                     sample_data = self._as_sample_data(scene_samples[frame_idx])
                     sample_data_next = self._as_sample_data(scene_samples[frame_idx + 1])

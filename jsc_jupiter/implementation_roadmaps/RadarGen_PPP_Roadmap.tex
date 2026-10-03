@@ -59,6 +59,17 @@ This ordering is important because the current RadarGen implementation does not 
 \noindent
 Where the current repository does not determine a design choice uniquely, this document marks the point explicitly as an \textbf{implementation check}. Such a check should be resolved by a small runtime probe before proceeding rather than by silently inventing behavior.
 
+\paragraph{Current implementation status (4 October 2026).}
+Work packages 1--6 are implemented, with the previously recorded
+verification limits. WP7 is implemented and its three-sample pretrained
+GPU integration check has passed, including the existing sampled metrics
+and the new analytical PPP metrics. This is a functional check using a
+six-update checkpoint, not evidence of useful generation quality.
+Empty-cloud evaluation policy, populated object-level metric checks,
+and multi-rank training verification remain open. The next task is
+WP8's tiny-subset overfit test before loss-weight and learning-rate
+selection or full training.
+
 \subsection*{Recommended implementation order}
 
 The numbered subsections below organize the required changes by topic.
@@ -3082,9 +3093,9 @@ prediction path. Empty generated point clouds are supported by
 the sampler. No field cache is implemented; scene and frame
 identities are returned with predictions.
 
-WP7 evaluation metrics and subsequent training-quality checks
-remain separate work. Multi-rank training validation also remains
-pending.
+WP7 evaluation integration was subsequently implemented and checked as
+recorded in subsection~27 below. Training-quality checks and multi-rank
+training validation remain pending.
 
 \subsection{Keep the RadarGen evaluation interface and add PPP-native count metrics}
 
@@ -3139,7 +3150,13 @@ def predict_point_cloud(
     ...
 \end{lstlisting}
 
-The wrapper should use precomputed BEV maps when \texttt{bev\_maps\_dir}, scene token, and frame index are available, following \texttt{RadarGenWrapper}. Otherwise it should use the PPP inference pipeline's full condition-generation path if that path is implemented.
+The implemented wrapper uses the three precomputed conditioning maps
+from completed HDF5 samples selected by \texttt{ppp\_data\_dir}, scene
+token, and frame index. It reuses the PPP dataset's transformations,
+completion records, processing signature, and pair-identity validation.
+Legacy separate-map loading through \texttt{bev\_maps\_dir} and online
+condition generation are not implemented by this wrapper; unsupported
+configuration must fail explicitly.
 
 \paragraph{One forward pass per evaluated sample.}
 PPP-native metrics need the intensity field in addition to the sampled point cloud. Do not run the model twice.
@@ -3159,6 +3176,26 @@ This distinction is important: RadarGen's evaluator does \emph{not} evaluate aga
 without the training-time pixel deduplication. The stored exact detections can be considered as an evaluation source only after verifying equality of sample identity, filtering, geometry, and mark definitions with this evaluator path; binary training masks cannot substitute for them.
 
 Therefore all PPP-native evaluation count errors must compare against this same evaluator ground truth, not against \texttt{point\_mask.sum()} from the derived training target. This preserves comparability with RadarGen's foreground point-count metrics.
+
+\paragraph{Implemented continuous HDF5 ground-truth source.}
+For PPP evaluation, read \texttt{ppp\_targets/xy},
+\texttt{ppp\_targets/rcs}, and \texttt{ppp\_targets/doppler} directly
+in physical units. Inspection of the producer confirmed that the radar
+callback captures detections after camera-frustum and strict square-range
+filtering, before image-coordinate normalization and pixel deduplication.
+Retain every stored detection, including multiple detections in one cell.
+
+The wrapper reuses metadata validation for sample and temporal identity,
+camera selection, one-sweep loading, coordinate frame, units, range,
+and normalization provenance. It checks indexed file size and modification
+time and rejects nonfinite or out-of-range targets. Ground truth is used
+only by the metrics and is not supplied to the model.
+
+The evaluator's \texttt{\_get\_evaluation\_gt()} selects this source when
+a PPP ground-truth provider is present. All models in that comparison
+receive the same ground truth; multiple providers must agree exactly.
+Baseline-only evaluation retains the original raw-radar loading path.
+This avoids requiring sweep archives to remain extracted after preprocessing.
 
 \paragraph{New PPP metrics module.}
 Create
@@ -3322,6 +3359,100 @@ Use a fixed PPP sampling seed, initially 42, for direct sampled-metric compariso
 
 \paragraph{Empty whole-scene realization check.}
 A PPP can theoretically sample zero points. The current RadarGen wrapper and several existing point-cloud metrics assume a nonempty synthetic cloud. Do not silently resample until nonempty, because that would change the PPP distribution. Before final evaluation, run the trained PPP model over the evaluation set with the chosen seed and count empty whole-scene samples. With realistic expected radar counts this probability should be negligible. If any occur, stop and define an explicit evaluation policy for undefined point-cloud metrics rather than fabricating a point or resampling conditionally.
+
+\subsection*{Work package 7 implementation and verification status
+(4 October 2026)}
+
+\paragraph{Implemented.}
+The registered \texttt{radargen\_ppp} wrapper performs one inference
+forward pass per sample, samples a point cloud, and retains detached
+cell masses with checked scene/frame identity for analytical metrics.
+The original sampled-metric formulas and static baseline metric-key lists
+are unchanged. PPP metrics are aggregated separately using the existing
+rotated-box geometry, continuous GT counts, and GT-positive box subset
+for analytical hit probabilities.
+
+The implementation includes the wrapper, \texttt{ppp\_metrics.py},
+\texttt{ppp\_ground\_truth.py}, evaluator integration, PPP evaluation
+configurations, a three-sample analytical preflight, and a Slurm smoke
+script. The supplied configurations currently evaluate PPP only; a
+side-by-side baseline run has not been verified.
+
+\paragraph{CPU verification.}
+Three analytical CPU tests passed locally, covering grid orientation,
+rotated-box integration, continuous count multiplicity, analytical hit
+probabilities, aggregation, and invalid masses. One additional HDF5 CPU
+test passed, checking exact coordinate/mark preservation, repeated
+locations, and rejection of nonfinite or out-of-range targets.
+Python syntax checks and incremental patch-application checks passed.
+These checks do not substitute for pretrained GPU execution.
+
+\paragraph{Raw-sweep failure and correction.}
+Job \texttt{2166130} evaluated frame~0 but failed on the next sample
+because the original evaluator tried to read an unavailable extracted
+radar sweep. The preprocessing runner extracts scene archives temporarily
+and removes its staging directory afterward. Evaluation was corrected to
+use the validated continuous HDF5 targets described above; no samples
+were skipped and no rasterized masks substituted.
+
+\paragraph{Successful analytical GPU preflight.}
+Job \texttt{2166259} processed frames 0, 1, and 2 of scene
+\texttt{018a60086f5e441fb09f476e55948b72} using the WP5 six-update
+checkpoint. GT counts were 1029, 1065, and 1078; expected counts were
+approximately 1.749897, 1.781933, and 1.759414; sampled counts were
+1, 3, and 1. All three samples completed with zero empty realizations.
+Frame~0's reported metrics matched the earlier raw-data run. This is
+metric agreement for that sample, not a dataset-wide array-equality test.
+
+\paragraph{Successful full evaluator GPU check.}
+Job \texttt{2166349} completed the existing sampled metrics together
+with the analytical PPP metrics on the same three samples. The trained
+PPP checkpoint loaded with no missing or unexpected keys. Global
+Chamfer, point-cloud MMD, and analytical PPP metrics were finite.
+Results were saved to:
+\begin{lstlisting}
+evaluation_results/truckscenes_ppp_smoke/eval_results_20261004_002609.json
+\end{lstlisting}
+Per-box Chamfer and class-specific invariant MMD were undefined
+(\texttt{NaN}) for this sparse prediction set. The logs record no valid
+per-box Chamfer comparisons and zero hits across 11 GT-positive boxes.
+These values must not be described as successful numerical validation
+of populated object-level comparisons.
+
+\paragraph{Reproduction commands.}
+From the repository root, run the focused CPU checks and analytical
+GPU preflight with:
+\begin{lstlisting}
+python tests/test_ppp_metrics.py
+python tests/test_ppp_ground_truth.py
+sbatch jsc_jupiter/wp7_evaluation_smoke.sbatch
+\end{lstlisting}
+The full three-sample evaluator uses the same Slurm resource settings:
+\begin{lstlisting}
+sed 's|evaluation/scripts/check_ppp_evaluation.py|evaluation/scripts/evaluate.py --config evaluation/configs/truckscenes_eval_ppp_smoke.yaml|' \
+  jsc_jupiter/wp7_evaluation_smoke.sbatch | sbatch
+\end{lstlisting}
+
+\paragraph{Status and remaining work.}
+WP7 implementation and the three-sample end-to-end integration check
+have passed. Model quality, full-split evaluation, and a side-by-side
+baseline comparison have not been established. The six-update checkpoint
+predicts far too few detections to support quality conclusions.
+Populated object-level metric verification remains pending.
+
+The evaluator stops on an empty generated cloud without resampling;
+an explicit policy for undefined sampled metrics is still required if
+such clouds occur. Zero empties in three samples does not resolve that
+policy or establish their absence across a complete evaluation set.
+The inherited rejection of empty GT frames also remains a limitation.
+
+Proceed to WP8's tiny-subset overfit test using the implemented training
+path. Monitor finite losses and gradients, spatial predictions, marks,
+and expected counts. Distinguish the deduplicated active-cell count used
+by the training objective from the continuous detection count used by
+evaluation. Loss-scale measurement, loss-weight and learning-rate
+selection, and multi-rank stability checks remain outstanding before
+full training.
 
 \subsection{Add a minimal end-to-end test before full training}
 
