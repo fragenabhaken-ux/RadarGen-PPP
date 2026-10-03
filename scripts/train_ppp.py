@@ -30,6 +30,13 @@ def validate_ppp_config(config: SanaConfig) -> None:
     require(data.get("dataset_name") == "truckscenes", "data.extra.dataset_name must be truckscenes")
     require(data.get("dataset_version") == "v1.2-trainval", "data.extra.dataset_version must be v1.2-trainval")
     require(data.get("eval_split") in ("train", "val"), "data.extra.eval_split must be train or val")
+    scenes = data.get("ppp_scene_tokens")
+    require(scenes is None or (isinstance(scenes, list) and bool(scenes) and
+            all(isinstance(s, str) and bool(s) for s in scenes) and len(set(scenes)) == len(scenes)),
+            "ppp_scene_tokens must be null or a nonempty list of distinct scene tokens")
+    signature = data.get("ppp_processing_signature")
+    require(isinstance(signature, str) and len(signature) == 64 and
+            all(c in "0123456789abcdef" for c in signature), "ppp_processing_signature must be a SHA256 hex string")
     require(isinstance(data.get("camera_views"), list) and bool(data["camera_views"]), "data.extra.camera_views must be a nonempty list")
     for key in ("coordinate_range", "camera_freq"):
         require(positive(data.get(key)), f"data.extra.{key} must be positive and finite")

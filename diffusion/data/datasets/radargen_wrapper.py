@@ -1,5 +1,4 @@
 from diffusion.data.builder import DATASETS
-from radargen.training.radargen_dataset import build_radargen_dataset_from_config
 
 
 @DATASETS.register_module()
@@ -15,6 +14,8 @@ class RadarGenDatasetWrapper:
 
     def __new__(cls, transform=None, resolution=512, config=None, **kwargs):
         """Build and return RadarGenDataset instance."""
+        from radargen.training.radargen_dataset import build_radargen_dataset_from_config
+
         return build_radargen_dataset_from_config(
             config, transform=transform, resolution=resolution, **kwargs
         )

@@ -200,9 +200,15 @@ fresh-training initialization sequence in subsection~24 must be respected:
 \end{enumerate}
 
 \paragraph{First implementation milestone.}
-Start with the configuration skeleton and subsections~1--4 on one or a
-few samples. Verify the sparse targets, coordinate round trip, and
-conditioning-tensor equivalence before preprocessing the full dataset.
+Establish the PPP configuration skeleton and implement subsections~1--4
+using the existing HDF5 output. Preprocessing is already implemented
+and does not need to be repeated for this milestone.
+Verify sparse-target construction, coordinate orientation, physical
+mark preservation, completed-scene indexing, final-pair retention,
+and batching on a small explicitly selected scene subset.
+Compare transformed conditioning tensors with the baseline when
+matching legacy source arrays are available; otherwise record this
+comparison as unverified rather than claiming equivalence.
 
 \paragraph{Progression to full training.}
 After all end-to-end structural checks in subsection~28 pass, proceed with
@@ -1122,6 +1128,143 @@ Ensure \texttt{h5py} is declared in the maintained project/environment dependenc
 
 \paragraph{Required verification.}
 On one or a few smoke samples, verify transformed-conditioning equivalence, derived target geometry, collision behavior, metadata consistency, and finite values. Compare deterministic outputs for \texttt{num\_workers=0} and multiple workers, including repeated epochs with persistent workers. Test default or explicit collation as appropriate. Report the limitations of any check for which the matching legacy source arrays are unavailable.
+
+\paragraph{Work package 2 implementation status (3 October 2026).}
+Implemented \texttt{radargen/ppp\_targets/creator.py} with
+\texttt{create\_ppp\_targets\_from\_detections()}, exported through its
+package initializer. It returns float32 mask and physical-mark grids plus
+stored, rounded-stage, final-collision, and active-cell counts and retained
+original indices. Both stages select highest RCS, breaking ties by lowest
+original detection index. Source arrays are not changed.
+The rounded-stage rule was regression-checked against the baseline helper.
+
+\texttt{radargen/training/radargen\_ppp\_dataset.py} provides
+\texttt{RadarGenPPPDataset}, its configuration factory,
+\texttt{validate\_ppp\_metadata()}, and \texttt{read\_ppp\_sample()}.
+The registry wrapper and \texttt{PPPTrainingBatch} are implemented at the
+specified locations. Samples contain the three float32 conditions
+\((3,512,512)\), three float32 targets \((1,512,512)\), and baseline-style
+\texttt{data\_info}; ordinary collation adds the batch dimension.
+Only the mask is binary; RCS and Doppler remain in dBsm and m/s.
+The condition transform is the baseline \texttt{default\_train\_from\_np}
+pipeline, applied once without extra channel conversions or flips.
+
+Two fields in \texttt{data.extra} configure selection and provenance:
+\texttt{ppp\_scene\_tokens} is an explicit nonempty scene subset, or
+\texttt{null} for the entire adapter split;
+\texttt{ppp\_processing\_signature} pins the independently verified producer
+SHA256. The current pin uses the worker's existing algorithm: sorted JSON
+of producer settings excluding scene, output, and staging paths, followed
+by the bytes of \texttt{hdf5\_4nodes\_runner.py} and
+\texttt{hdf5\_samples.py}. Do not replace it merely to accept a mismatching
+completion record. The development configuration explicitly selects scene
+\texttt{018a60086f5e441fb09f476e55948b72}.
+The original configuration points to the smoke HDF5 root.
+The subsequent completed-scene check used a temporary configuration
+pointing to the full HDF5 root while preserving this scene selection
+and the processing-signature pin.
+That check did not modify the repository configuration.
+For subsequent development, set \texttt{data.ppp\_data\_dir} to the
+full HDF5 root while retaining the explicit single-scene selection.
+
+Initialization checks selected-scene success records, signatures, adapter
+frame/pair counts, exact filenames and sizes, and metadata/dataset headers
+for every selected pair. It does not read image, detection, depth, or box
+arrays while indexing. Each item opens its file read-only, reads the six
+consumed arrays and required metadata, closes the file, then transforms and
+rasterizes on CPU. The last stored pair is retained. Empty-frame counts
+are reported and loading fails explicitly until an empty-frame training
+policy is agreed; no skipping or fallback is enabled.
+
+The baseline registry wrapper now imports its existing factory inside
+\texttt{\_\_new\_\_} to resolve an observed circular import. Argument
+forwarding and the returned object were checked with a factory probe;
+baseline training was not run. Its dataset and transformations are unchanged.
+\texttt{h5py} was already declared in the maintained JUPITER requirements.
+The lightweight configuration command and unfinished-training refusal
+remain intact, checked with Torch, HDF5, and model imports blocked.
+
+\paragraph{WP2 checks and remaining verification limitation
+(3 October 2026).}
+The reusable CPU check is:
+\begin{lstlisting}[language=bash]
+source jsc_jupiter/modules_jupiter.sh
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/bin/python -B \
+    scripts/check_ppp_data.py
+\end{lstlisting}
+The script also accepts \texttt{--config\_path} to select an
+alternative configuration.
+
+Synthetic checks covered both collision stages, equal-RCS ties,
+consistent and zero-valued marks, orientation, cell-center round trips,
+boundary/nonfinite rejection, and explicit empty-frame refusal.
+A further synthetic check covered unequal RCS within a
+rounded-coordinate group.
+
+The initial check used the smoke HDF5 root.
+Because the selected smoke scene has no \texttt{\_SUCCESS.json},
+the strict training loader correctly refused it.
+The initial worker comparison therefore exercised only the shared
+item reader through an explicitly labeled diagnostic probe.
+
+A subsequent check used a temporary configuration pointing to:
+\begin{lstlisting}
+/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples
+\end{lstlisting}
+The scene selection and processing-signature pin were preserved.
+The actual training dataset accepted scene
+\texttt{018a60086f5e441fb09f476e55948b72}, containing 195 adapter
+frames and 194 consecutive-frame pairs.
+Completed-scene indexing passed, and access to the final stored
+pair confirmed that it was retained.
+
+Frames 0, 50, and 100 passed metadata, shape, dtype, finite-value,
+physical-mark, and retained-point coordinate-round-trip checks.
+Their target-construction counts were:
+\begin{center}
+\begin{tabular}{rrrrr}
+\hline
+Frame & Stored & After rounding & Final collisions & Active cells \\
+\hline
+0   & 1029 & 964 & 27 & 937 \\
+50  & 924  & 870 & 31 & 839 \\
+100 & 1001 & 953 & 27 & 926 \\
+\hline
+\end{tabular}
+\end{center}
+The RCS and Doppler targets exactly preserved the physical marks
+of the retained detections.
+
+Using the actual completed-scene dataset, zero-worker loading
+and loading with two spawned persistent workers produced identical
+batches across two iterations.
+Batch sizes were 2 and 1.
+This resolves the earlier completed-scene indexing and worker
+verification blocker for the selected scene.
+
+Transformed-conditioning equivalence against legacy BEV NumPy
+inputs remains unverified.
+The matching appearance-map files for frames 0, 50, and 100 were
+not found by a filename search under:
+\begin{lstlisting}
+/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing
+\end{lstlisting}
+Consequently, the comparison with the baseline loader could not
+be executed. This is an unavailable-source limitation, not an
+observed numerical mismatch.
+
+The subsequent check exited with code 2 solely because these legacy
+conditioning comparisons remained blocked.
+All executed assertions passed.
+No HDF5 files were modified, preprocessing was not repeated,
+and no models, GPUs, or training runs were initialized.
+
+These results establish focused validation on one completed scene;
+they do not establish completeness of the entire preprocessing run
+or numerical conditioning equivalence with legacy files.
+Work package~3, the independent PPP and mark losses, may proceed
+with this limitation explicitly retained.
+The model and complete training loop remain future work.
 
 \subsection{Change the training batch in \texttt{scripts/train\_ppp.py}}
 
@@ -2319,9 +2462,13 @@ configuration loading, explicit training refusal, rejection of a nonzero
 fixed timestep, and absence of heavy runtime imports on both entry-point
 paths. The original YAML decodes identically apart from the new optional
 field. The baseline entry point, YAML, and dataset code are unchanged;
-full baseline training was not run. HDF5 validation, the loader, sparse
-targets, losses, model, and training loop remain unimplemented in this
-PPP path. Work package 2 next establishes dataset and target correctness.
+full baseline training was not run. At completion of WP1, the loader,
+sparse targets, losses, model, and training loop were still unimplemented.
+The WP2 status in subsection 4 records subsequent loader and target
+implementation, successful completed-scene and worker checks, and
+the remaining unavailable legacy-conditioning comparison.
+Losses, model adaptation, and the complete training loop remain
+future work.
 
 \subsection{Initialize the model from the same pretrained SANA weights as RadarGen}
 

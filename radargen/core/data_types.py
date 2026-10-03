@@ -94,6 +94,20 @@ class TrainingBatch(TypedDict, total=False):
     ref_sensor_token: Optional[str]
 
 
+class PPPTrainingBatch(TypedDict, total=False):
+    """PPP sample: float32 conditions (3,H,W), targets (1,H,W), physical marks.
+
+    Default collation adds a leading batch dimension; data_info matches baseline.
+    """
+    point_mask: torch.Tensor
+    rcs_target: torch.Tensor
+    doppler_target: torch.Tensor
+    bev_color_map: torch.Tensor
+    bev_seg_map: torch.Tensor
+    bev_velocity_map: torch.Tensor
+    data_info: Dict[str, Any]
+
+
 @dataclass
 class SampleInfo:
     """

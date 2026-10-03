@@ -1,7 +1,7 @@
 # WP1 skeleton: validate only; PPP training is not implemented.
 data:
   dataset_dir: "/e/scratch/nxtaim-1/public/truckscenes/man-truckscenes"  # Where the TruckScenes dataset lives
-  ppp_data_dir: "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/smoke/hdf5_samples"
+  ppp_data_dir: "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples"
   image_size: 512
   load_text_feat: false
   load_vae_feat: false
@@ -11,6 +11,10 @@ data:
     dataset_name: truckscenes
     eval_split: train
     dataset_version: v1.2-trainval
+    # Explicit subset; None selects the entire adapter split and requires every scene.
+    ppp_scene_tokens: ['018a60086f5e441fb09f476e55948b72']
+    # Producer configuration + hdf5_4nodes_runner.py + hdf5_samples.py SHA256.
+    ppp_processing_signature: 22b8e2aa32ac33f9ebd50fda28a5e1fde16df5377c85b179f4b6a191dd6ffad6
     camera_freq: 10.0  # Confirmed in smoke metadata/normalization_json
     camera_views: ['CAMERA_RIGHT_FRONT', 'CAMERA_LEFT_FRONT', 'CAMERA_RIGHT_BACK', 'CAMERA_LEFT_BACK']
     coordinate_range: 50.0
