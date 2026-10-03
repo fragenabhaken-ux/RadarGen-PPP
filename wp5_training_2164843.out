@@ -1,0 +1,26 @@
+Setting vars
+SCRIPT_DIR       = /e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter
+REPO_DIR         = /e/project1/nxtaim-1/huber7/repos/RadarGen
+USER_PROJECT_DIR = /e/project1/nxtaim-1/huber7
+ENV_NAME         = env_radargen_jupiter
+ENV_DIR          = /e/project1/nxtaim-1/huber7/env_radargen_jupiter
+HF_HOME          = /e/project1/nxtaim-1/huber7/pretrained/huggingface
+TORCH_HOME       = /e/project1/nxtaim-1/huber7/pretrained/torch
+
+Activated env_radargen_jupiter
+ENV_DIR   = /e/project1/nxtaim-1/huber7/env_radargen_jupiter
+REPO_DIR  = /e/project1/nxtaim-1/huber7/repos/RadarGen
+CUDA_HOME = /e/software/default/stages/2025/software/CUDA/12
+HF_HOME   = /e/project1/nxtaim-1/huber7/pretrained/huggingface
+TORCH_HOME = /e/project1/nxtaim-1/huber7/pretrained/torch
+
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/bin/python
+Python 3.12.3
+Cannot import NystromAttention, you can not run original UniDepth. UniDepthV2 is available.
+[Sana] Loading model from /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+[DC-AE] Loading model from /e/project1/nxtaim-1/huber7/pretrained/dc-ae-f32c32-sana-1.1/
+Loading weights from local directory
+Cannot import NystromAttention, you can not run original UniDepth. UniDepthV2 is available.
+[Sana] Loading model from /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+[DC-AE] Loading model from /e/project1/nxtaim-1/huber7/pretrained/dc-ae-f32c32-sana-1.1/
+Loading weights from local directory

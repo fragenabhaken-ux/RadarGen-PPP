@@ -1,0 +1,61 @@
+
+  [01;33mThis stage is deprecated. Please consider moving to a new stage (2026
+or newer)[0m
+
+
+The following have been reloaded with a version change:
+  1) sympy/1.13.1 => sympy/1.13.3
+
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/lib/python3.12/site-packages/mmcv/__init__.py:20: UserWarning: On January 1, 2023, MMCV will release v2.0.0, in which it will remove components related to the training process and add a data transformation module. In addition, it will rename the package names mmcv to mmcv-lite and mmcv-full to mmcv. See https://github.com/open-mmlab/mmcv/blob/master/docs/en/compatibility.md for more details.
+  warnings.warn(
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/lib/python3.12/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+/e/project1/nxtaim-1/huber7/repos/RadarGen/diffusion/model/nets/fastlinear/modules/nn/norm.py:186: UserWarning: Cannot import apex RMSNorm, switch to vanilla implementation
+  warnings.warn("Cannot import apex RMSNorm, switch to vanilla implementation")
+2026-10-04 04:19:18 - [Sana] - WARNING - use pe: False, position embed interpolation: 1.0, base size: 16
+2026-10-04 04:19:18 - [Sana] - WARNING - attention type: linear; ffn type: glumbconv; autocast linear attn: False
+/e/project1/nxtaim-1/huber7/repos/RadarGen/UniDepth/unidepth/utils/chamfer_distance.py:9: UserWarning: !! To run evaluation you need KNN. Please compile KNN: `cd unidepth/ops/knn with && bash compile.sh`.
+  warnings.warn(
+2026-10-04 04:19:25 - [Sana] - INFO - Load checkpoint from /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth. Load ema: False.
+INFO:radargen.training.ppp_initialization:SANA missing keys: ['modality_pe', 'pos_embed']; unexpected keys: []
+INFO:radargen.training.ppp_initialization:PPP PatchEmbedMS.proj initialized: (1152, 99, 1, 1)
+INFO:radargen.training.ppp_initialization:DC-AE output before adaptation: in=128 kernel=(3, 3) stride=(1, 1) padding=(1, 1) dtype=torch.float32 device=cuda:0
+INFO:radargen.training.ppp_initialization:PPP adapted shapes: input=(1152, 99, 1, 1) modality=(3, 3) output=(1, 128, 3, 3)
+2026-10-04 04:20:25 - [Sana] - INFO - Automatically adapt lr to 0.00001 (using sqrt scaling rule).
+2026-10-04 04:20:25 - [Sana] - INFO - CAMEWrapper Optimizer: total 615 param groups, 615 are learnable, 0 are fix. Lr group: 615 params with lr 0.00001; Weight decay group: 615 params with weight decay 0.0.
+2026-10-04 04:20:25 - [Sana] - INFO - Lr schedule: constant, num_warmup_steps:2.
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:04<00:04,  4.65s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:04<00:00,  2.09s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:04<00:00,  2.47s/it]
+INFO:ppp_training:PPP update 1: {'loss_total': 41.080955505371094, 'loss_ppp_raw': 12.134147644042969, 'loss_rcs_raw': 12.201485633850098, 'loss_doppler_raw': 16.745323181152344, 'loss_ppp_weighted': 12.134147644042969, 'loss_rcs_weighted': 12.201485633850098, 'loss_doppler_weighted': 16.745323181152344, 'grad_norm': 3.8461410999298096, 'lr': 4.419417382415922e-06}
+INFO:ppp_training:PPP update 2: {'loss_total': 40.99842071533203, 'loss_ppp_raw': 12.256462097167969, 'loss_rcs_raw': 11.990492820739746, 'loss_doppler_raw': 16.751466751098633, 'loss_ppp_weighted': 12.256462097167969, 'loss_rcs_weighted': 11.990492820739746, 'loss_doppler_weighted': 16.751466751098633, 'grad_norm': 3.7064449787139893, 'lr': 8.838834764831844e-06}
+INFO:ppp_training:PPP update 3: {'loss_total': 42.21096420288086, 'loss_ppp_raw': 12.002019882202148, 'loss_rcs_raw': 12.587255477905273, 'loss_doppler_raw': 17.621688842773438, 'loss_ppp_weighted': 12.002019882202148, 'loss_rcs_weighted': 12.587255477905273, 'loss_doppler_weighted': 17.621688842773438, 'grad_norm': 2.2447469234466553, 'lr': 8.838834764831844e-06}
+2026-10-04 04:20:56 - [Sana] - INFO - Saved checkpoint of epoch 0 to /e/project1/nxtaim-1/huber7/repos/RadarGen/output/RadarGen_PPP_WP5_smoke_2164843/checkpoints/tmpca43blo7/epoch_0_step_3.pth.
+INFO:ppp_training:PPP checkpoint saved: output/RadarGen_PPP_WP5_smoke_2164843/checkpoints/epoch_0_step_3.pth; progress={'epoch': 0, 'batch_in_epoch': 6, 'global_step': 3}
+INFO:radargen.training.ppp_checkpoint:PPP missing keys: []; unexpected keys: []
+INFO:ppp_training:PPP smoke parameter updates and checkpoint restoration passed
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/lib/python3.12/site-packages/mmcv/__init__.py:20: UserWarning: On January 1, 2023, MMCV will release v2.0.0, in which it will remove components related to the training process and add a data transformation module. In addition, it will rename the package names mmcv to mmcv-lite and mmcv-full to mmcv. See https://github.com/open-mmlab/mmcv/blob/master/docs/en/compatibility.md for more details.
+  warnings.warn(
+/e/project1/nxtaim-1/huber7/env_radargen_jupiter/lib/python3.12/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+/e/project1/nxtaim-1/huber7/repos/RadarGen/diffusion/model/nets/fastlinear/modules/nn/norm.py:186: UserWarning: Cannot import apex RMSNorm, switch to vanilla implementation
+  warnings.warn("Cannot import apex RMSNorm, switch to vanilla implementation")
+2026-10-04 04:21:25 - [Sana] - WARNING - use pe: False, position embed interpolation: 1.0, base size: 16
+2026-10-04 04:21:25 - [Sana] - WARNING - attention type: linear; ffn type: glumbconv; autocast linear attn: False
+/e/project1/nxtaim-1/huber7/repos/RadarGen/UniDepth/unidepth/utils/chamfer_distance.py:9: UserWarning: !! To run evaluation you need KNN. Please compile KNN: `cd unidepth/ops/knn with && bash compile.sh`.
+  warnings.warn(
+2026-10-04 04:21:29 - [Sana] - INFO - Load checkpoint from /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth. Load ema: False.
+INFO:radargen.training.ppp_initialization:SANA missing keys: ['modality_pe', 'pos_embed']; unexpected keys: []
+INFO:radargen.training.ppp_initialization:PPP PatchEmbedMS.proj initialized: (1152, 99, 1, 1)
+INFO:radargen.training.ppp_initialization:DC-AE output before adaptation: in=128 kernel=(3, 3) stride=(1, 1) padding=(1, 1) dtype=torch.float32 device=cuda:0
+INFO:radargen.training.ppp_initialization:PPP adapted shapes: input=(1152, 99, 1, 1) modality=(3, 3) output=(1, 128, 3, 3)
+2026-10-04 04:22:10 - [Sana] - INFO - Automatically adapt lr to 0.00001 (using sqrt scaling rule).
+2026-10-04 04:22:10 - [Sana] - INFO - CAMEWrapper Optimizer: total 615 param groups, 615 are learnable, 0 are fix. Lr group: 615 params with lr 0.00001; Weight decay group: 615 params with weight decay 0.0.
+2026-10-04 04:22:10 - [Sana] - INFO - Lr schedule: constant, num_warmup_steps:2.
+INFO:radargen.training.ppp_checkpoint:PPP missing keys: []; unexpected keys: []
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 78.52it/s]
+INFO:ppp_training:PPP update 4: {'loss_total': 42.420318603515625, 'loss_ppp_raw': 11.700570106506348, 'loss_rcs_raw': 12.92070484161377, 'loss_doppler_raw': 17.79904556274414, 'loss_ppp_weighted': 11.700570106506348, 'loss_rcs_weighted': 12.92070484161377, 'loss_doppler_weighted': 17.79904556274414, 'grad_norm': 6.314666748046875, 'lr': 8.838834764831844e-06}
+INFO:ppp_training:PPP update 5: {'loss_total': 42.3927001953125, 'loss_ppp_raw': 11.729528427124023, 'loss_rcs_raw': 13.059736251831055, 'loss_doppler_raw': 17.60343360900879, 'loss_ppp_weighted': 11.729528427124023, 'loss_rcs_weighted': 13.059736251831055, 'loss_doppler_weighted': 17.60343360900879, 'grad_norm': 5.202883243560791, 'lr': 8.838834764831844e-06}
+INFO:ppp_training:PPP update 6: {'loss_total': 42.78153610229492, 'loss_ppp_raw': 12.204344749450684, 'loss_rcs_raw': 12.938827514648438, 'loss_doppler_raw': 17.638362884521484, 'loss_ppp_weighted': 12.204344749450684, 'loss_rcs_weighted': 12.938827514648438, 'loss_doppler_weighted': 17.638362884521484, 'grad_norm': 7.632605075836182, 'lr': 8.838834764831844e-06}
+2026-10-04 04:23:27 - [Sana] - INFO - Saved checkpoint of epoch 0 to /e/project1/nxtaim-1/huber7/repos/RadarGen/output/RadarGen_PPP_WP5_smoke_2164843/checkpoints/tmp09a9y_4s/epoch_0_step_6.pth.
+INFO:ppp_training:PPP checkpoint saved: output/RadarGen_PPP_WP5_smoke_2164843/checkpoints/epoch_0_step_6.pth; progress={'epoch': 0, 'batch_in_epoch': 12, 'global_step': 6}
+INFO:radargen.training.ppp_checkpoint:PPP missing keys: []; unexpected keys: []
+INFO:ppp_training:PPP smoke parameter updates and checkpoint restoration passed
