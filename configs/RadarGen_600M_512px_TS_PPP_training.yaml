@@ -28,7 +28,7 @@ model:
   image_size: 512
   mixed_precision: bf16
   fp32_attention: true
-  load_from: hf://Efficient-Large-Model/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+  load_from: /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
   resume_from:
   aspect_ratio_type: ASPECT_RATIO_512
   attn_type: linear
@@ -48,7 +48,7 @@ model:
     fixed_timestep: 0.0
 vae:
   vae_type: dc-ae
-  vae_pretrained: mit-han-lab/dc-ae-f32c32-sana-1.1
+  vae_pretrained: /e/project1/nxtaim-1/huber7/pretrained/dc-ae-f32c32-sana-1.1/
   weight_dtype: float32
   scale_factor: 0.41407
   vae_latent_dim: 32

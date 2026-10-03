@@ -1,4 +1,5 @@
 import torch.nn as nn
+import torch
 from torch.nn import Conv2d
 from torch.nn.parameter import Parameter
 
@@ -33,3 +34,22 @@ def inflate_sana_input_channels_for_radargen(model, logger, num_conditions: int 
     # Finally, replace the original layer with the new one
     model.x_embedder.proj = _new_conv_in
     logger.info("SANA PatchEmbedMS.proj layer was replaced")
+
+
+def inflate_sana_input_channels_for_ppp(model, logger, num_conditions: int = 3):
+    """Adapt an already initialized 32-channel SANA projection to 96+3 channels."""
+    old = model.x_embedder.proj
+    if (not isinstance(old, nn.Conv2d) or old.in_channels != 32 or old.groups != 1
+            or num_conditions != 3 or tuple(model.modality_pe.shape) != (3, 3)):
+        raise ValueError("PPP inflation requires the bare 32-channel projection and three modalities/conditions")
+    new = nn.Conv2d(99, old.out_channels, old.kernel_size, stride=old.stride,
+                    padding=old.padding, dilation=old.dilation, groups=old.groups,
+                    bias=old.bias is not None, padding_mode=old.padding_mode,
+                    device=old.weight.device, dtype=old.weight.dtype)
+    with torch.no_grad():
+        nn.init.xavier_uniform_(new.weight.flatten(1))
+        new.weight[:, :96].copy_(old.weight.repeat(1, 3, 1, 1) / 3)
+        if old.bias is not None:
+            new.bias.copy_(old.bias)
+    model.x_embedder.proj = new
+    logger.info("PPP PatchEmbedMS.proj initialized: %s", tuple(new.weight.shape))

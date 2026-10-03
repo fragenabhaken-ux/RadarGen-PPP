@@ -1262,9 +1262,11 @@ and no models, GPUs, or training runs were initialized.
 These results establish focused validation on one completed scene;
 they do not establish completeness of the entire preprocessing run
 or numerical conditioning equivalence with legacy files.
-Work package~3, the independent PPP and mark losses, may proceed
-with this limitation explicitly retained.
-The model and complete training loop remain future work.
+Work package~3 subsequently implemented and tested the independent
+PPP and mark losses, as recorded in subsection~20.
+The legacy-conditioning comparison remains unverified.
+The WP4 model implementation and checkpoint inspection are recorded in
+subsection~24; the complete training loop remains future work.
 
 \subsection{Change the training batch in \texttt{scripts/train\_ppp.py}}
 
@@ -2539,7 +2541,10 @@ sparse targets, losses, model, and training loop were still unimplemented.
 The WP2 status in subsection 4 records subsequent loader and target
 implementation, successful completed-scene and worker checks, and
 the remaining unavailable legacy-conditioning comparison.
-Losses, model adaptation, and the complete training loop remain
+The WP3 status in subsection 20 records the implemented standalone
+losses and their successful CPU checks.
+The WP4 status in subsection~24 records subsequent model adaptation and
+checkpoint inspection. Integration into the complete training loop remains
 future work.
 
 \subsection{Initialize the model from the same pretrained SANA weights as RadarGen}
@@ -2571,6 +2576,12 @@ The new 99-channel input projection should inherit three repeated copies of the 
 
 The single-channel decoder output convolution should be initialized by averaging the three pretrained RGB output filters and, when present, their biases.
 
+The cubic mark links have derivative \(3q^2\), which is zero at
+\(q=0\). Preserve the prescribed pretrained-filter initialization;
+do not replace it with an all-zero output layer.
+During model verification, check that initial raw mark predictions
+are not identically zero and that mark-loss gradients reach the decoder.
+
 \paragraph{Validation of checkpoint surgery.}
 Immediately after initialization, print the missing and unexpected key lists and verify the shapes of
 \begin{itemize}
@@ -2583,6 +2594,106 @@ Do not use \texttt{strict=False} as a blanket reason to ignore unexplained misma
 
 \paragraph{Future RadarGen-warm-start experiment.}
 After the SANA-initialized PPP model has been trained and evaluated, a separate experiment may initialize all shape-compatible parameters from the fully trained RadarGen checkpoint. That experiment should be reported as radar-specific transfer learning, not as the main fair comparison.
+
+\paragraph{WP4 implementation and verification status (3 October 2026).}
+WP4 model construction is implemented in
+\texttt{diffusion/model/nets/radargen\_ppp.py}, the separate PPP
+input-inflation helper, and
+\texttt{radargen/training/ppp\_decoder.py},
+\texttt{ppp\_initialization.py}, and
+\texttt{radargen\_ppp\_training\_model.py}.
+The original RadarGen factory, input inflation, VAE helpers, and baseline
+configuration remain unchanged. The PPP-only YAML now uses these local assets:
+\begin{lstlisting}
+/e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+/e/project1/nxtaim-1/huber7/pretrained/dc-ae-f32c32-sana-1.1/
+\end{lstlisting}
+The SANA file is 2,371,119,642 bytes and passed ZIP member CRC validation.
+The DC-AE weights are 1,249,046,372 bytes; the safetensors header,
+contiguous data offsets, exact payload length, and architecture configuration
+were checked. These are structural completeness checks, not an upstream
+checksum comparison. No weights were downloaded or substituted.
+
+\texttt{scripts/inspect\_ppp\_checkpoints.py} constructs the configured
+600M DiT on the meta device and assigns actual memory-mapped SANA tensors
+before input expansion. This avoids a full pretrained forward/backward and
+a second allocated 600M parameter set. After the baseline removal of
+\texttt{pos\_embed}, missing keys were exactly
+\texttt{modality\_pe} and \texttt{pos\_embed}; unexpected keys and shared-key
+shape mismatches were empty. The existing null-embedding replacement was
+not exercised in this inspection. The pretrained projection shape was
+\((1152,32,1,1)\); expansion uses three repeated copies divided by three,
+with Xavier initialization for the final modality channels.
+DC-AE key and shape inspection found no missing or unexpected keys or shape
+mismatches. Actual \texttt{get\_vae('dc-ae', local\_directory, 'cpu')}
+loading succeeded before scalar-output surgery: the output convolution
+changed from \((3,128,3,3)\) to \((1,128,3,3)\).
+The existing local-directory loader is sufficient; no baseline change was
+necessary.
+
+The public DiT interface consumes three scaled condition latents
+\((B,32,h,w)\), modality-expanded text \((3B,1,L,C)\), a compatible mask,
+and a length-\(3B\) zero timestep. It assembles \((3B,99,h,w)\) in
+sample-major density/RCS/Doppler order, preserves joint modality attention,
+and returns \((3B,32,h,w)\). The wrapper creates the zero timestep and
+returns decoded \((B,3,1,H,W)\). The frozen FP32 condition encoder stays
+outside the wrapper and in evaluation mode. The shared decoder has FP32
+trainable parameters; scaling is multiplication on encoding and division
+on decoding using the checkpoint factor \(0.41407\). No detach, image
+postprocessing, or zero output initialization is introduced.
+
+\texttt{tests/test\_ppp\_model.py} provides one focused CPU set with a tiny
+real RadarGenPPP transformer and substitute encoder/decoder modules.
+It checks projection repetition, RGB-filter/bias averaging, sample and
+modality ordering, output shapes, frozen encoder state, fixed timestep
+rejection and scheduler endpoint, and separate RCS/Doppler cubic-loss
+backward paths with finite nonzero gradients at early/final decoder
+parameters, \texttt{modality\_pe}, and a DiT attention parameter.
+Injected substitute checkpoint loaders separately check construction order.
+Synthetic text in that injected test is explicitly test-only.
+The inherited caption-dropout implementation explicitly calls CUDA;
+CPU tests disable text dropout only in the tiny test configuration.
+The configured pretrained path retains baseline dropout behavior.
+Configuration-only validation passed and unfinished-training refusal
+remained intact. Dataset/loss regression suites were not repeated.
+
+No compatible null embedding was found in the repository or searched local
+pretrained/cache roots, and the configured Hugging Face cache has no Gemma
+model. The required baseline asset is
+\begin{lstlisting}
+output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth
+\end{lstlisting}
+with finite \texttt{uncond\_prompt\_embeds} of shape \((1,300,2304)\)
+and the required \texttt{uncond\_prompt\_embeds\_mask} of shape
+\((1,L)\), with binary values and at least one active token. The initializer
+validates both before model construction. Supply a genuine compatible baseline
+file, or prepare it from locally staged
+\texttt{Efficient-Large-Model/gemma-2-2b-it} tokenizer and model assets:
+\begin{lstlisting}
+source jsc_jupiter/activate_jupiter.sh
+python scripts/prepare_ppp_null_embedding.py \
+  --text-model-dir /path/to/local/gemma-2-2b-it --device cuda
+\end{lstlisting}
+This reproduces the baseline right-padded empty-prompt decoder branch with
+local-only loading; it never fabricates a zero embedding or downloads assets.
+The full fresh initializer therefore remains unverified through its actual
+baseline null replacement until that asset is provided.
+
+Run the following only on an allocated GPU after preparing the null asset:
+\begin{lstlisting}
+python scripts/check_ppp_model.py \
+  --null-embed-path output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth
+\end{lstlisting}
+The probe clears gradients between losses and recomputes each forward to
+keep only one backward graph in memory. This explicit probe checks the
+pretrained condition encoding, BF16 forward,
+raw output range and separately finite, nonzero RCS and Doppler fields,
+PPP-only, RCS-only, and Doppler-only decoder/DiT loss gradients, FP32 decoder parameters,
+and decoder train/eval equivalence. It creates no optimizer or training loop.
+Full pretrained runtime validation is pending; no full 600M forward/backward,
+GPU verification, Slurm submission, sampling, evaluation, PDF compilation,
+commit, or push was performed. WP4 implementation and checkpoint inspection
+are complete subject to this explicitly retained runtime prerequisite.
 
 \subsection{Replace diffusion inference with modality-conditioned direct prediction}
 
