@@ -1266,7 +1266,8 @@ Work package~3 subsequently implemented and tested the independent
 PPP and mark losses, as recorded in subsection~20.
 The legacy-conditioning comparison remains unverified.
 The WP4 model implementation and checkpoint inspection are recorded in
-subsection~24; the complete training loop remains future work.
+subsection~24. The WP5 status in subsection~22 records training integration
+and its remaining pretrained GPU checks.
 
 \subsection{Change the training batch in \texttt{scripts/train\_ppp.py}}
 
@@ -2217,8 +2218,9 @@ source jsc_jupiter/modules_jupiter.sh
     -m unittest discover -s tests -p test_ppp_losses.py -v
 \end{lstlisting}
 No dataset checks, preprocessing, GPU tests, or training were run for WP3.
-Model construction and training integration remain future work; the
-physical TruckScenes Doppler period is still unresolved.
+Subsequent model construction is recorded in subsection~24 and training
+integration in subsection~22. The physical TruckScenes Doppler period is
+still unresolved.
 
 \subsection{Replace the loss and backward pass in \texttt{scripts/train\_ppp.py}}
 
@@ -2395,6 +2397,135 @@ The smoke test must save a temporary PPP checkpoint, modify one DiT parameter an
 \paragraph{Learning-rate selection.}
 Keep RadarGen's optimizer type and constant-with-warmup schedule for the first smoke tests, but do not assume \(10^{-4}\) is optimal after unfreezing the decoder and changing the objective. Once the training path is stable, repeat the learning-rate range test used in the previous MMSegmentation work and select the operating learning rate from that experiment.
 
+\paragraph{WP5 implementation and verification status.}
+The PPP entry point now implements direct training rather than the WP1
+unfinished-training refusal. \texttt{--validate-only} remains a lightweight
+configuration-only path. The original \texttt{scripts/train.py} and baseline
+configuration are unchanged. \texttt{scripts/train\_ppp.py} reuses the WP2
+completed-scene dataset, default tensor collation, and
+\texttt{DistributedRangedSampler}. The sampler already partitions by rank;
+Accelerate prepares its dataloader for device transfer and accumulation
+without partitioning those samples a second time. Final partial batches
+are retained as in the baseline. The existing dataset rejection of empty
+frames remains in force; no new empty-frame policy is introduced.
+
+Only appearance, semantics, and velocity conditioning images enter the
+frozen FP32 encoder under autocast/no-grad. Their scaled latents receive
+independent whole-batch dropout at probability \(0.1\), shared by all
+three radar modality streams. Live Gemma empty-text encoding is retained
+using the locally staged tokenizer/model at
+\begin{lstlisting}
+/e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it
+\end{lstlisting}
+with local-only loading. The existing genuine null embedding and local
+SANA/DC-AE paths from WP4 are reused; no asset is downloaded or regenerated.
+The stored null embedding initializes SANA text conditioning; it does not
+replace live text encoding during training.
+
+Each microbatch executes one fixed-timestep DiT/shared-decoder forward.
+Density/RCS/Doppler raw fields in \((B,3,1,H,W)\) go directly to the WP3
+losses with the binary point mask and physical sparse targets. The
+exponential intensity link and cubic mark links occur exactly once inside
+those losses, with FP32 reductions and fixed full-grid area \(512^2\).
+The weighted sum uses the configured weights (initially all \(1\)); no
+extra division by \(3B\) is applied. Zero physical marks remain valid at
+occupied cells. No radar target encoding, noisy radar input, diffusion
+scheduler/loss, or iterative denoising is constructed.
+
+The complete wrapper is optimized with the existing optimizer constructor
+and parameter-wise policies, including both DiT and shared decoder at the
+same configured base LR. Membership checks require each trainable wrapper
+parameter exactly once and exclude the encoder. No separate decoder LR
+was specified, so no new LR multiplier is introduced. FP32 decoder
+parameters and encoder evaluation mode are retained. Accelerator BF16,
+DDP, gradient accumulation, synchronized wrapper-wide clipping, baseline
+auto-LR scaling, and the constant-with-warmup LR scheduler are used.
+Warmup world-size scaling and AcceleratedScheduler stepping follow the
+baseline. Optimizer zeroing is suppressed by Accelerate during unsynchronized
+microbatches, preserving accumulated gradients. Raw and weighted component
+losses, total loss, gradient norm, and LR are logged at the configured
+interval. No optimal learning rate or convergence is established.
+
+\texttt{radargen/training/ppp\_checkpoint.py} reuses generic checkpoint
+saving, with atomic publication and a \texttt{latest.pth} link. The generic
+saver has optional metadata/RNG arguments with unchanged baseline defaults;
+its inference-loader import is deferred to loading so CPU saving does not
+import GPU kernels. PPP checkpoints contain exact \texttt{dit.*} and
+\texttt{ppp\_decoder.*} wrapper state, optimizer and LR-scheduler state,
+epoch, optimizer-update count, next batch position, data/training contract,
+and Python/NumPy/Torch/CUDA/loader-generator RNG state for each rank.
+The fixed encoder and text model are reconstructed from local assets.
+Saving occurs at synchronized optimizer boundaries, configured epoch/step
+intervals, and an explicit update/time stop. Resume strictly validates
+wrapper keys and the contract, restores the next sampler position and
+rank RNG, and never reinjects the null embedding or drops positional keys.
+Changing world size, batch size, accumulation, or the saved data/training
+contract is rejected. This initially provides same-layout resume, not
+elastic resharding or a stochastic-augmentation worker-state guarantee.
+
+\texttt{tests/test\_ppp\_training.py} passed three focused CPU tests using
+substitute data, text, DiT, and AE components with the actual PPP loop,
+CAME optimizer, constant scheduler, and checkpoint helpers. Checks cover
+unequal loss weights and zero-valued valid marks; exact optimizer membership;
+a two-microbatch accumulated/clipped step against an independent manual
+reference; DiT, modality, early decoder, and output-layer updates;
+frozen encoder state and FP32 decoder parameters; strict checkpoint
+mutation/restoration and optimizer/scheduler state; RNG restoration; and
+bitwise-equal six-update continuation versus a three-update save followed
+by three resumed updates. Configuration-only parsing of the smoke command,
+Python syntax, Slurm shell syntax, and whitespace checks passed. Standalone
+dataset/loss/model suites were not repeated.
+
+Single-GPU real-data pretrained WP5 training and save/resume validation
+is complete: Slurm job \texttt{2164843} passed, as recorded in
+\texttt{wp5\_training\_2164843.out} and
+\texttt{wp5\_training\_2164843.err}. The first process completed three
+optimizer updates, saved a checkpoint at batch position 6, and passed
+parameter-update and checkpoint mutation/restoration checks. A second
+process resumed that checkpoint, completed updates 4--6, saved at batch
+position 12, and passed the same checks. Checkpoints were written under
+\begin{lstlisting}
+output/RadarGen_PPP_WP5_smoke_2164843/checkpoints/
+\end{lstlisting}
+as \texttt{epoch\_0\_step\_3.pth} and
+\texttt{epoch\_0\_step\_6.pth}. All logged component/total losses and
+gradient norms were finite. PPP checkpoint restoration reported no missing
+or unexpected keys; fresh SANA initialization separately reported only the
+expected missing \texttt{modality\_pe} and \texttt{pos\_embed} keys, with
+no unexpected keys. These are actual pretrained GPU training results,
+distinct from the earlier substitute-component CPU tests. This smoke run
+establishes successful resumed execution and restoration, not exact GPU
+resume equivalence to uninterrupted training or training convergence.
+
+The prepared single-GPU Slurm script runs the actual training path for
+three optimizer updates (six microbatches), verifies intended updates and
+checkpoint mutation/restoration, then starts a second process for three
+resumed updates. Run from the repository root:
+\begin{lstlisting}[language=bash]
+sbatch jsc_jupiter/wp5_training_smoke.sbatch
+\end{lstlisting}
+Its exact training command, after environment activation on an allocated GPU,
+is (use the same work directory for the second command):
+\begin{lstlisting}[language=bash]
+python scripts/train_ppp.py \
+  --config_path configs/RadarGen_600M_512px_TS_PPP_training.yaml \
+  --work_dir output/RadarGen_PPP_WP5_smoke --report_to none \
+  --train.train_batch_size 1 --train.num_workers 0 \
+  --train.log_interval 1 --train.lr_schedule_args '{"num_warmup_steps": 2}' \
+  --max-updates 3 --smoke-check
+# Repeat the same command with --resume latest for three further updates.
+\end{lstlisting}
+The two-update warmup is an explicit smoke-only override so parameter updates
+are measurable in this short diagnostic; the main YAML retains its 2000-step
+warmup. Optimizer/schedule types, configured loss weights, BF16, two-microbatch
+accumulation, and conditioning dropout remain intact. The script uses the
+configured completed-scene subset and writes to a job-specific output path.
+Single-GPU pretrained training/save-resume checks passed in job
+\texttt{2164843}; multi-rank DDP verification remains pending. The
+two-update warmup was a smoke-test override only, not a change to the
+main training schedule. FSDP, training convergence, LR selection, sampling, evaluation,
+and later work packages are outside this implementation.
+
 \subsection{Create a separate PPP training configuration}
 
 \paragraph{New file.}
@@ -2517,7 +2648,7 @@ Give the run a distinct \texttt{name} and, if desired, a distinct tracker projec
 The specified PPP YAML and \texttt{scripts/train\_ppp.py} skeleton are
 implemented using \texttt{SanaConfig} and the existing smoke HDF5 root.
 \texttt{DataConfig.ppp\_data\_dir} defaults to \texttt{None}.
-The entry point parses and validates configuration only: with
+At WP1 completion, the entry point parsed and validated configuration only: with
 \texttt{--validate-only} it prints the resolved configuration and exits
 with code 0; without the flag it explicitly reports that PPP training
 is not implemented and exits with code 1. No model loading, weight
@@ -2544,8 +2675,9 @@ the remaining unavailable legacy-conditioning comparison.
 The WP3 status in subsection 20 records the implemented standalone
 losses and their successful CPU checks.
 The WP4 status in subsection~24 records subsequent model adaptation and
-checkpoint inspection. Integration into the complete training loop remains
-future work.
+checkpoint inspection and actual pretrained GPU validation. The WP5 status
+in subsection~22 records subsequent training integration and pending GPU
+training/save-resume checks.
 
 \subsection{Initialize the model from the same pretrained SANA weights as RadarGen}
 
@@ -2691,9 +2823,10 @@ tiny-transformer and substitute-AE CPU tests. The error log contains
 library/environment warnings but no traceback or failed check.
 
 WP4 is complete within its model-construction and verification scope.
-Training-loop integration and training convergence remain unverified and
-belong to subsequent work packages; this probe created no optimizer or
-training loop and does not establish those results.
+The subsequent WP5 training-loop implementation and CPU verification are
+recorded in subsection~22; actual pretrained training integration and
+training convergence remain unverified. This WP4 probe created no optimizer
+or training loop and does not establish those results.
 
 \subsection{Replace diffusion inference with modality-conditioned direct prediction}
 

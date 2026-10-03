@@ -1,4 +1,4 @@
-# WP1 skeleton: validate only; PPP training is not implemented.
+# Direct PPP training; --validate-only checks configuration without runtime initialization.
 data:
   dataset_dir: "/e/scratch/nxtaim-1/public/truckscenes/man-truckscenes"  # Where the TruckScenes dataset lives
   ppp_data_dir: "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples"

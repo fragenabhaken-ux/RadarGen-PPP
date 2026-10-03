@@ -22,7 +22,6 @@ import numpy as np
 import torch
 
 from diffusion.utils.logger import get_root_logger
-from radargen.inference.model_download import find_model
 
 
 def save_checkpoint(
@@ -36,6 +35,8 @@ def save_checkpoint(
     keep_last=False,
     step=None,
     add_symlink=False,
+    extra_state=None,
+    rng_state=None,
 ):
     os.makedirs(work_dir, exist_ok=True)
     state_dict = dict(state_dict=model.state_dict())
@@ -51,14 +52,19 @@ def save_checkpoint(
         if step is not None:
             file_path = file_path.split(".pth")[0] + f"_step_{step}.pth"
 
-    rng_state = {
-        "torch": torch.get_rng_state(),
-        "torch_cuda": torch.cuda.get_rng_state_all(),
-        "numpy": np.random.get_state(),
-        "python": random.getstate(),
-        "generator": generator.get_state(),
-    }
+    if rng_state is None:
+        rng_state = {
+            "torch": torch.get_rng_state(),
+            "torch_cuda": torch.cuda.get_rng_state_all(),
+            "numpy": np.random.get_state(),
+            "python": random.getstate(),
+            "generator": generator.get_state(),
+        }
     state_dict["rng_state"] = rng_state
+    if extra_state:
+        if state_dict.keys() & extra_state.keys():
+            raise ValueError("Extra checkpoint state cannot replace standard keys")
+        state_dict.update(extra_state)
 
     logger = get_root_logger()
     torch.save(state_dict, file_path)
@@ -91,6 +97,8 @@ def load_checkpoint(
     assert isinstance(checkpoint, str)
     logger = get_root_logger()
     ckpt_file = checkpoint
+    from radargen.inference.model_download import find_model
+
     checkpoint = find_model(ckpt_file)
 
     state_dict_keys = ["pos_embed", "base_model.pos_embed", "model.pos_embed"]
