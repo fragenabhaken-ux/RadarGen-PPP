@@ -108,7 +108,51 @@ def compute_ppp_losses(decoded, batch, ppp_loss, settings):
 
 
 def training_microbatch(model, condition_encoder, batch, text_provider, ppp_loss, config, accelerator):
-    """One direct forward. Only conditions enter the frozen encoder."""
+    """Main training: Predict radar fields and compute losses for one microbatch.
+
+    Only conditioning maps enter the frozen encoder. Ground-truth radar
+    targets are used by the losses, not as model inputs. This function
+    does not call backward() or update model parameters.
+
+    Args:
+        model: Trainable PPP model combining the DiT and scalar decoder.
+        condition_encoder: Frozen encoder returning three scaled latent
+            tensors, each shaped (B, 32, L, L).
+        batch: Dictionary containing:
+            bev_color_map: Appearance conditioning, shaped (B, 3, H, W).
+            bev_seg_map: Semantic conditioning, shaped (B, 3, H, W).
+            bev_velocity_map: Velocity conditioning, shaped (B, 3, H, W).
+            point_mask: Binary radar target mask, shaped (B, 1, H, W).
+            rcs_target: Physical RCS targets, shaped (B, 1, H, W).
+            doppler_target: Physical Doppler targets, shaped (B, 1, H, W).
+            data_info: Optional spatial and sample metadata.
+        text_provider: Callable taking batch size and device and returning
+            empty-text embeddings and their attention mask, expanded for
+            the three output modality streams.
+        ppp_loss: PPP likelihood loss callable.
+        config: Configuration containing image size, encoder downsampling
+            factor, conditioning dropout, and loss settings.
+        accelerator: Accelerator managing device placement and mixed
+            precision through its autocast context.
+
+    Local variables:
+        conditions: Encoded appearance, semantics, and velocity latents.
+        batch_size: Number B of examples in this microbatch.
+        latent_size: Latent spatial size L, equal to image size divided
+            by the encoder downsampling factor.
+        dropout: Probability of zeroing each conditioning modality.
+            Each decision applies to the entire microbatch, independently
+            across the three modalities; defaults to 0.1.
+        y: Empty-text embeddings required by the DiT interface.
+        mask: Text attention mask, distinct from the radar point_mask.
+        decoded: Raw predictions shaped (B, 3, 1, H, W), ordered as
+            density, RCS, and Doppler. The loss helper applies the
+            prescribed output transformations.
+
+    Returns:
+        The result of compute_ppp_losses(), containing the combined
+        training loss and its component losses.
+    """
     import random
     with accelerator.autocast():
         conditions = condition_encoder([batch[k] for k in
@@ -159,9 +203,12 @@ def load_local_text_provider(config, device, model_directory):
 
 def run_training(config, options, *, components=None, dataset=None, text_provider=None):
     """Actual PPP loop; injection is reserved for explicitly labeled CPU tests."""
+    from radargen.training.startup_logging import startup_log
+    startup_log("runtime imports begin")
     import copy
     import datetime
     import logging
+    import os
     import time
     from dataclasses import asdict
     import torch
@@ -181,11 +228,16 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     Path(config.work_dir).mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger('ppp_training')
+    startup_log("distributed initialization begin")
     accelerator = Accelerator(cpu=components is not None, mixed_precision=config.model.mixed_precision,
                               gradient_accumulation_steps=config.train.gradient_accumulation_steps,
                               log_with=None if config.report_to == 'none' else config.report_to,
                               project_dir=str(Path(config.work_dir)/'logs'),
                               kwargs_handlers=[InitProcessGroupKwargs(timeout=datetime.timedelta(seconds=5400))])
+    startup_log("distributed initialization end", device=accelerator.device,
+                world_size=accelerator.num_processes, process_index=accelerator.process_index,
+                backend=dist.get_backend() if dist.is_initialized() else "none",
+                cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES", "unset"))
     if options.smoke_check and accelerator.num_processes != 1:
         raise ValueError('The minimal checkpoint mutation smoke check requires one GPU/process')
     if components is None and accelerator.device.type != 'cuda':
@@ -207,14 +259,20 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
         resume = str(Path(config.work_dir)/'checkpoints/latest.pth')
     fresh_config = copy.deepcopy(config)
     fresh_config.resume_from = fresh_config.model.resume_from = None
+    startup_log("dataset construction begin", injected=dataset is not None)
+    if dataset is None:
+        from radargen.training.radargen_ppp_dataset import build_radargen_ppp_dataset_from_config
+        dataset = build_radargen_ppp_dataset_from_config(config,
+            config_path=getattr(options, "config_path", "configs/RadarGen_PPP_4GPU_utilization.yaml"))
+    startup_log("dataset construction end", validated_pairs=len(dataset))
+    startup_log("model loading begin", injected=components is not None)
     if components is None:
         components = initialize_ppp_model(fresh_config, null_embed_path=options.null_embed_path,
                                           device=accelerator.device)
     model, encoder = components.model.to(accelerator.device), components.condition_encoder.to(accelerator.device)
     encoder.eval()
-    if dataset is None:
-        from radargen.training.radargen_ppp_dataset import build_radargen_ppp_dataset_from_config
-        dataset = build_radargen_ppp_dataset_from_config(config)
+    startup_log("model loading end")
+    manifest_identity = getattr(dataset, 'manifest_identity', None)
     subset_indices = config.data.extra.get('ppp_subset_indices')
     if subset_indices is not None:
         from torch.utils.data import Subset
@@ -231,6 +289,8 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     loader = DataLoader(dataset, batch_size=config.train.train_batch_size, sampler=sampler,
                         num_workers=config.train.num_workers, pin_memory=accelerator.device.type=='cuda',
                         drop_last=False, generator=generator)
+    startup_log("optimizer/scheduler construction begin", rank_samples=len(sampler),
+                batches=len(loader), workers=config.train.num_workers)
     lr_scale_ratio = 1
     if config.train.auto_lr:
         lr_scale_ratio = auto_scale_lr(config.train.train_batch_size * accelerator.num_processes *
@@ -243,14 +303,19 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     if config.train.lr_schedule_args.get('num_warmup_steps'):
         config.train.lr_schedule_args['num_warmup_steps'] *= accelerator.num_processes
     scheduler = build_lr_scheduler(config.train, optimizer, loader, lr_scale_ratio)
+    checkpoint_data = asdict(config.data)
+    # Manifest content identity, not its movable JSON pathname, binds resume.
+    checkpoint_data.pop('ppp_manifest_path', None)
     contract = dict(world_size=accelerator.num_processes, dataset_size=len(dataset),
                     batch_size=config.train.train_batch_size, accumulation=config.train.gradient_accumulation_steps,
-                    data=asdict(config.data), model=asdict(fresh_config.model), vae=asdict(config.vae),
+                    data=checkpoint_data, model=asdict(fresh_config.model), vae=asdict(config.vae),
                     text_encoder=asdict(config.text_encoder), optimizer=config.train.optimizer,
                     lr_schedule=config.train.lr_schedule, lr_args=config.train.lr_schedule_args,
                     loss=config.train.extra, seed=config.train.seed, gradient_clip=config.train.gradient_clip,
                     null_embed_path=str(Path(options.null_embed_path).resolve()),
                     text_model_dir=str(Path(options.text_model_dir).resolve()))
+    if manifest_identity is not None:
+        contract['manifest_identity'] = manifest_identity
     progress = dict(epoch=0, batch_in_epoch=0, global_step=0)
     resume_rng = None
     if resume:
@@ -261,13 +326,20 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                     for k in ('epoch', 'batch_in_epoch', 'global_step'))
                 or progress['batch_in_epoch'] > len(loader)):
             raise ValueError('Invalid PPP checkpoint training position')
+    startup_log("optimizer/scheduler/resume end")
+    startup_log("Gemma loading begin", injected=text_provider is not None)
     if text_provider is None:
         text_provider = load_local_text_provider(config, accelerator.device, options.text_model_dir)
     # Baseline preparation order; already rank-partitioned sampler must not be sharded again.
+    startup_log("Gemma loading end")
+    startup_log("DDP model preparation begin")
     model = accelerator.prepare(model)
+    startup_log("DDP model preparation end")
+    startup_log("optimizer/scheduler/loader preparation begin")
     optimizer, scheduler = accelerator.prepare(optimizer, scheduler)
     loader = prepare_data_loader(loader, device=accelerator.device, num_processes=1, process_index=0,
                                  put_on_device=True, rng_types=[])
+    startup_log("optimizer/scheduler/loader preparation end")
     if accelerator.is_main_process and config.report_to != 'none':
         accelerator.init_trackers(config.tracker_project_name)
     ppp_loss = PPPLoss(out_img_size=(512,512),
@@ -281,6 +353,7 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                     bare.ppp_decoder.decoder.project_out.op_list[-1].conv.weight.detach().clone())
     started, last_saved = time.monotonic(), None
     updates_this_run = 0
+    first_microbatch = True
 
     def save():
         nonlocal last_saved
@@ -311,24 +384,41 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
         sampler.set_epoch(epoch)
         sampler.set_start(start_batch * config.train.train_batch_size)
         # Creating workers/iterator consumes only the loader generator, not training RNG.
+        if first_microbatch:
+            startup_log("first batch iterator begin")
         iterator = iter(loader)
+        if first_microbatch:
+            startup_log("first batch wait begin")
         if resume_rng is not None:
             restore_rng_state(resume_rng, generator)
             resume_rng = None
         batches_this_epoch = 0
         for local_batch, batch in enumerate(iterator, start=start_batch):
+            if first_microbatch:
+                startup_log("first batch received")
+                startup_log("first forward begin")
             with accelerator.accumulate(model):
                 loss, logs = training_microbatch(model, encoder, batch, text_provider, ppp_loss, config, accelerator)
+                if first_microbatch:
+                    startup_log("first forward end; first backward begin")
                 accelerator.backward(loss)
+                if first_microbatch:
+                    startup_log("first backward end")
                 grad_norm = None
                 if accelerator.sync_gradients:
                     grad_norm = accelerator.clip_grad_norm_(model.parameters(), config.train.gradient_clip)
                     if not torch.isfinite(grad_norm):
                         raise ValueError('Nonfinite PPP gradient norm')
+                first_update = accelerator.sync_gradients and updates_this_run == 0
+                if first_update:
+                    startup_log("first optimizer update begin")
                 optimizer.step()
                 scheduler.step()
                 # AcceleratedOptimizer suppresses zero_grad until the accumulation boundary.
                 optimizer.zero_grad(set_to_none=True)
+            if first_update:
+                startup_log("first optimizer update end; metric collectives begin")
+            first_microbatch = False
             batches_this_epoch += 1
             progress.update(epoch=epoch, batch_in_epoch=local_batch+1)
             if accelerator.sync_gradients:
@@ -337,6 +427,8 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                 values = {key: accelerator.reduce(value.float(), reduction='mean').item() for key,value in logs.items()}
                 values.update(grad_norm=accelerator.reduce(grad_norm.float(), reduction='mean').item(),
                               lr=scheduler.get_last_lr()[0])
+                if first_update:
+                    startup_log("first metric collectives end", global_step=progress["global_step"])
                 if progress['global_step'] % config.train.log_interval == 0 or updates_this_run == 1:
                     logger.info('PPP update %d: %s', progress['global_step'], values)
                     if config.report_to != 'none':
@@ -408,6 +500,12 @@ def main() -> int:
     parser.add_argument('--null-embed-path', default='output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth')
     parser.add_argument('--text-model-dir', default='/e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it')
     options, config_args = parser.parse_known_args()
+    options.config_path = "configs/RadarGen_PPP_4GPU_utilization.yaml"
+    for i, arg in enumerate(config_args):
+        if arg == "--config_path" and i+1 < len(config_args):
+            options.config_path = config_args[i+1]
+        elif arg.startswith("--config_path="):
+            options.config_path = arg.split("=", 1)[1]
     try:
         config = pyrallis.parse(config_class=SanaConfig, args=config_args)
         validate_ppp_config(config)

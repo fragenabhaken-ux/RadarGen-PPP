@@ -64,6 +64,11 @@ def load_ppp_checkpoint(checkpoint_path, training_model, optimizer=None, lr_sche
     metadata = state.get('ppp_training', {})
     if metadata.get('version') != 1:
         raise ValueError('Expected a version-1 PPP training checkpoint')
+    if (contract is not None and contract.get('manifest_identity') is not None
+            and not metadata.get('contract', {}).get('manifest_identity')):
+        raise ValueError('Legacy PPP checkpoint has no validated manifest identity; exact resume into '
+                         'manifest training is unsupported. Keep the original diagnostic workflow/checkpoint '
+                         'with its original checkout, or start a fresh manifest-backed training run; no automatic migration.')
     if contract is not None and metadata['contract'] != contract:
         raise ValueError('PPP resume training/data contract differs from saved checkpoint')
     saved, expected = state['state_dict'], training_model.state_dict()

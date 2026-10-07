@@ -1,7 +1,9 @@
 """Completed-scene PPP loading with read-only, process-local HDF5 access."""
 
 import json
+import hashlib
 import logging
+import time
 from pathlib import Path
 
 import h5py
@@ -11,6 +13,7 @@ from torch.utils.data import Dataset
 
 from diffusion.data.transforms import get_transform
 from jsc_jupiter.hdf5_samples import PPP_POLICY, SCHEMA_VERSION, pair_metadata
+from radargen.training.startup_logging import startup_log
 from radargen.core.data_types import PPPTrainingBatch
 from radargen.ppp_targets import create_ppp_targets_from_detections
 
@@ -112,10 +115,17 @@ class RadarGenPPPDataset(Dataset):
         self.map_transform = get_transform('default_train_from_np', resolution)
         self.frame_index = []
         self.empty_frame_count = 0
+        self.scene_records = []
+        self.target_counts = []
         root = Path(ppp_data_dir).expanduser().resolve()
         wanted = set(scene_tokens) if scene_tokens is not None else None
         found = set()
+        validation_started = last_report = time.monotonic()
+        startup_log("HDF5 inventory validation begin", split=split, root=root,
+                    selected_scenes="all" if wanted is None else len(wanted))
         for scene, frames in adapter.iter_scenes(split, filter_fn=lambda token: wanted is None or token in wanted):
+            startup_log("scene inventory validation begin", scene=scene, pairs=len(frames)-1,
+                        completed_pairs=len(self.frame_index))
             found.add(scene)
             directory = root / scene
             if len(frames) < 2 or directory.is_symlink() or not directory.is_dir():
@@ -123,7 +133,9 @@ class RadarGenPPPDataset(Dataset):
             marker_path = directory / '_SUCCESS.json'
             if marker_path.is_symlink() or not marker_path.is_file():
                 raise ValueError(f'{scene}: missing/invalid _SUCCESS.json; incomplete scenes are not accepted')
-            marker = json.loads(marker_path.read_text())
+            marker_bytes = marker_path.read_bytes()
+            marker_stat = marker_path.stat()
+            marker = json.loads(marker_bytes)
             pairs = len(frames) - 1
             if not isinstance(marker, dict) or any(marker.get(k) != v for k, v in dict(
                     scene=scene, signature=processing_signature, expected_frames=len(frames), expected_pairs=pairs).items()):
@@ -137,17 +149,31 @@ class RadarGenPPPDataset(Dataset):
                 if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
                     raise ValueError(f'{path}: missing, linked, or empty sample')
                 sizes[path.name] = path.stat().st_size
+                if time.monotonic() - last_report >= 30:
+                    startup_log("scene file inventory progress", scene=scene, checked=i+1, total=pairs)
+                    last_report = time.monotonic()
             if marker.get('files') != sizes:
                 raise ValueError(f'{scene}: completion-record file sizes/inventory mismatch')
+            self.scene_records.append(dict(scene_token=scene, expected_frames=len(frames),
+                expected_pairs=pairs, inventory_count=pairs+1,
+                completion_sha256=hashlib.sha256(marker_bytes).hexdigest(),
+                completion_size=marker_stat.st_size, completion_mtime_ns=marker_stat.st_mtime_ns))
             for i in range(pairs):
                 expected = dict(pair_metadata(adapter, frames[i], frames[i+1], split), scene_token=scene, frame_index=i)
                 path = directory / f'sample_{i:06d}.h5'
+                if time.monotonic() - last_report >= 30:
+                    startup_log("HDF5 metadata validation progress", scene=scene,
+                                pair=i, scene_pairs=pairs, completed_pairs=len(self.frame_index), path=path)
+                    last_report = time.monotonic()
                 with h5py.File(path, 'r') as handle:
                     count = validate_ppp_metadata(handle, expected, resolution=resolution,
                                                   point_limit=self.point_limit, normalization=self.normalization)
+                self.target_counts.append(count)
                 self.empty_frame_count += count == 0
                 stat = path.stat()
                 self.frame_index.append((path, expected, stat.st_size, stat.st_mtime_ns))
+            startup_log("scene metadata validation end", scene=scene,
+                        completed_pairs=len(self.frame_index), empty_frames=self.empty_frame_count)
         if wanted is not None and found != wanted:
             raise ValueError(f'Selected scenes are absent from adapter split {split}: {sorted(wanted-found)}')
         if not self.frame_index:
@@ -156,14 +182,19 @@ class RadarGenPPPDataset(Dataset):
             LOG.error('Selected PPP inventory contains %d empty frames; training policy unresolved', self.empty_frame_count)
             raise ValueError(f'{self.empty_frame_count} empty PPP frames; define an explicit training policy before loading')
         self.ori_imgs_nums = len(self.frame_index)
+        startup_log("HDF5 inventory validation end", scenes=len(found), pairs=len(self.frame_index),
+                    seconds=f"{time.monotonic()-validation_started:.1f}")
 
     def __len__(self):
         return len(self.frame_index)
 
     def __getitem__(self, index) -> PPPTrainingBatch:
         path, expected, size, mtime = self.frame_index[index]
-        stat = path.stat()
-        if path.is_symlink() or (stat.st_size, stat.st_mtime_ns) != (size, mtime):
+        try:
+            stat = path.stat()
+        except OSError as error:
+            raise ValueError(f'{path}: indexed immutable sample unavailable; restore data or explicitly rebuild manifest') from error
+        if path.parent.is_symlink() or path.is_symlink() or (stat.st_size, stat.st_mtime_ns) != (size, mtime):
             raise ValueError(f'{path}: indexed immutable sample changed')
         sample, _ = read_ppp_sample(path, expected, resolution=self.resolution,
                                     point_limit=self.point_limit, normalization=self.normalization,
@@ -171,7 +202,7 @@ class RadarGenPPPDataset(Dataset):
         return sample
 
 
-def build_radargen_ppp_dataset_from_config(config, **kwargs):
+def validate_radargen_ppp_dataset_from_config(config, **kwargs):
     """Construct a metadata-only TruckScenes adapter and completed PPP dataset."""
     from radargen.core.normalization import NormalizationConfig
     from radargen.core.protocols import DatasetConfig
@@ -188,12 +219,24 @@ def build_radargen_ppp_dataset_from_config(config, **kwargs):
     if resolution != config.data.image_size:
         raise ValueError('Dataset and requested resolution must agree')
     norm = NormalizationConfig(**{k: extra[k] for k in vars(NormalizationConfig())})
+    startup_log("TruckScenes database loading begin")
     trucksc = TruckScenes(extra['dataset_version'], str(Path(config.data.dataset_dir).expanduser()), verbose=False)
+    startup_log("TruckScenes database loading end; adapter construction begin")
     adapter = TruckScenesAdapter(trucksc, config=DatasetConfig(
         name='truckscenes', camera_views=extra['camera_views'],
         reference_sensor=TRUCKSCENES_REFERENCE_SENSOR, normalization=norm,
         data_root=trucksc.dataroot, version=trucksc.version))
+    startup_log("adapter construction end; scene enumeration begin")
     return RadarGenPPPDataset(adapter, ppp_data_dir=config.data.ppp_data_dir,
                              split=extra['eval_split'], resolution=resolution,
                              processing_signature=extra.get('ppp_processing_signature'),
                              scene_tokens=extra.get('ppp_scene_tokens'))
+
+
+def build_radargen_ppp_dataset_from_config(config, **kwargs):
+    """Fast startup only: require a prepared manifest, never scan implicitly."""
+    from radargen.training.ppp_manifest import load_ppp_manifest
+    if kwargs.get('resolution', config.data.image_size) != config.data.image_size:
+        raise ValueError('Dataset and requested resolution must agree')
+    return load_ppp_manifest(config, config_path=kwargs.get('config_path',
+                             'configs/RadarGen_PPP_4GPU_utilization.yaml'))

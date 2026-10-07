@@ -12,7 +12,7 @@ def main():
     import torch
     from diffusion.utils.config import SanaConfig
     from radargen.inference.ppp_pipeline import RadarGenPPPPipeline
-    from radargen.training.radargen_ppp_dataset import build_radargen_ppp_dataset_from_config
+    from radargen.training.radargen_ppp_dataset import validate_radargen_ppp_dataset_from_config
     from radargen.ppp.sampling import ppp_cell_masses
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='configs/RadarGen_600M_512px_TS_PPP_inference.yaml')
@@ -26,7 +26,7 @@ def main():
     args = parser.parse_args()
     with open(args.config) as stream:
         config = pyrallis.load(SanaConfig, stream)
-    dataset = build_radargen_ppp_dataset_from_config(config)
+    dataset = validate_radargen_ppp_dataset_from_config(config)
     pipeline = RadarGenPPPPipeline.from_config(config, checkpoint_path=args.checkpoint,
         sana_checkpoint_path=args.sana_checkpoint, null_embed_path=args.null_embed_path,
         text_model_dir=args.text_model_dir, device=args.device, seed=args.seed)

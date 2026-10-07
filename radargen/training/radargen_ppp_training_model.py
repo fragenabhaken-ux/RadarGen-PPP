@@ -13,7 +13,9 @@ class RadarGenPPPTrainingModel(nn.Module):
         self.ppp_decoder = ppp_decoder
 
     def forward(self, bev_condition_maps, y, mask=None, data_info=None):
-        """Scaled condition latents + 3B empty-text embeddings -> (B,3,1,H,W)."""
+        """Scaled condition latents + 3B empty-text embeddings -> (B,3,1,H,W).
+        y is the text-conditioning embedding produced by Gemma from the empty prompt.
+        """
         batch = bev_condition_maps[0].shape[0]
         timestep = torch.zeros(len(PPP_MODALITIES) * batch,
                                device=bev_condition_maps[0].device, dtype=torch.float32)

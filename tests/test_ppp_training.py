@@ -122,6 +122,38 @@ class TrainingChecks(unittest.TestCase):
             for name,parameter in manual.model.state_dict().items():
                 torch.testing.assert_close(parameter,integrated.model.state_dict()[name],rtol=0,atol=0)
 
+    def test_manifest_identity_survives_subset_and_resume(self):
+        with open('configs/RadarGen_600M_512px_TS_PPP_training.yaml') as stream:
+            config = pyrallis.load(SanaConfig, stream)
+        config.model.image_size = config.data.image_size = 2
+        config.vae.vae_downsample_rate = 1
+        config.model.mixed_precision = 'no'
+        config.train.train_batch_size = 1
+        config.train.num_workers = 0
+        config.train.gradient_accumulation_steps = 1
+        config.train.auto_lr = {}
+        config.train.lr_schedule_args = {'num_warmup_steps': 0}
+        config.report_to = 'none'
+        config.data.extra['ppp_subset_indices'] = [0, 1]
+        data = TinyDataset()
+        data.manifest_identity = dict(format_version=1, validation_version=1, sha256='a'*64)
+        options = SimpleNamespace(smoke_check=False, max_updates=1, resume=None,
+                                  null_embed_path='substitute-test-only', text_model_dir='substitute-test-only')
+        with tempfile.TemporaryDirectory() as directory:
+            config.work_dir = directory
+            first = run_training(config, options, components=components(), dataset=data, text_provider=text)
+            state = torch.load(first['checkpoint'], map_location='cpu', weights_only=False)
+            contract = state['ppp_training']['contract']
+            self.assertEqual(contract['manifest_identity'], data.manifest_identity)
+            self.assertNotIn('ppp_manifest_path', contract['data'])
+            options.resume = first['checkpoint']
+            config.data.ppp_manifest_path = 'relocated-identical-manifest.json'
+            second = run_training(config, options, components=components(), dataset=data, text_provider=text)
+            self.assertEqual(second['progress']['global_step'], 2)
+            data.manifest_identity = dict(data.manifest_identity, sha256='b'*64)
+            with self.assertRaisesRegex(ValueError, 'contract differs'):
+                run_training(config, options, components=components(), dataset=data, text_provider=text)
+
     def test_integrated_updates_accumulation_and_resume(self):
         with open('configs/RadarGen_600M_512px_TS_PPP_training.yaml') as stream:
             config=pyrallis.load(SanaConfig,stream)

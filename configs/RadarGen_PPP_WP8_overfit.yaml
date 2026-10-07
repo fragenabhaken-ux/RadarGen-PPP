@@ -2,6 +2,7 @@
 data:
   dataset_dir: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
   ppp_data_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples
+  ppp_manifest_path: output/ppp_manifests/truckscenes_wp8_overfit.json
   image_size: 512
   load_text_feat: false
   load_vae_feat: false

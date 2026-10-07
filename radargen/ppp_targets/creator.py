@@ -35,7 +35,7 @@ def create_ppp_targets_from_detections(xy, rcs, doppler, *, image_size, point_li
     # Preserve the baseline helper's source-dtype arithmetic/np.round rule.
     continuous = (xy + point_limit) / (2 * point_limit) * image_size
     rounded = np.round(continuous).astype(np.int32)
-    stage1 = _select_indices(rounded, rcs, np.arange(count))
+    stage1 = _select_indices(rounded, rcs, np.arange(count)) # This selects one detection per rounded-coordinate group, keeping the one with the highest RCS.
     cells = np.floor(continuous[stage1]).astype(np.int64)
     if not ((cells >= 0) & (cells < image_size)).all():
         raise ValueError("PPP rasterization produced an out-of-range cell")

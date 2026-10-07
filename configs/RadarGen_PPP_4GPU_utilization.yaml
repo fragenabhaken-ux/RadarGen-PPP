@@ -1,4 +1,9 @@
-# Direct PPP training; --validate-only checks configuration without runtime initialization.
+# Four-GPU utilization test based on the standard direct PPP training configuration.
+# Launch four distributed processes, one per GPU; YAML alone does not allocate GPUs.
+# Per-GPU batch 8 x 4 GPUs x accumulation 1 = effective batch 32.
+# Set --max-updates in the launch command to bound this test; num_epochs is not an update limit.
+# This is the utilization test, not the later 2000-update LR range test.
+# --validate-only checks configuration without runtime initialization.
 data:
   dataset_dir: "/e/scratch/nxtaim-1/public/truckscenes/man-truckscenes"  # Where the TruckScenes dataset lives
   ppp_data_dir: "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples"
@@ -12,7 +17,7 @@ data:
     dataset_name: truckscenes
     eval_split: train
     dataset_version: v1.2-trainval
-    # Entire adapter-selected illuminated training split.
+    # Full adapter-selected illuminated training split; all corresponding HDF5 scenes are required.
     ppp_scene_tokens: null
     # Producer configuration + hdf5_4nodes_runner.py + hdf5_samples.py SHA256.
     ppp_processing_signature: 22b8e2aa32ac33f9ebd50fda28a5e1fde16df5377c85b179f4b6a191dd6ffad6
@@ -72,11 +77,11 @@ scheduler:
   logit_std: 1.0
   vis_sampler: flow_dpm-solver
 train:
-  num_workers: 10
+  num_workers: 10  # Per GPU process: 40 loader workers across four GPUs.
   seed: 42
-  train_batch_size: 16
+  train_batch_size: 4  # Per GPU; adjust this after checking LLview.
   num_epochs: 300
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 1
   grad_checkpointing: true
   gradient_clip: 0.1
   optimizer:
@@ -87,7 +92,7 @@ train:
     eps:
       - 1.0e-30
       - 1.0e-16
-    lr: 0.0001
+    lr: 0.001
     type: CAMEWrapper
     weight_decay: 0.0
   lr_schedule: constant
@@ -95,7 +100,12 @@ train:
     num_warmup_steps: 2000
   log_interval: 20
   save_model_epochs: 10
-  work_dir: output/RadarGen_600M_512px_TS_PPP
+  save_model_steps: 10000  # The loop also saves when its update/time limit is reached.
+  # Explicitly retain the template's inherited Sana LR scaling.
+  # Four GPUs, batch 8, accumulation 1: peak LR = 1e-4 * sqrt(32/256) = 3.5355e-5.
+  auto_lr:
+    rule: sqrt
+  work_dir: output/RadarGen_PPP_4GPU_utilization
   online_metric: false
   eval_metric_step: 5000
   online_metric_dir: metric_helper
@@ -106,8 +116,11 @@ train:
     doppler_weight: 1.0
     normalize_ppp_by_gt_count: true
     velocity_loss_mode: signed_l1
+    conditioning_dropout: 0.1
+    overfit_diagnostic_interval: 0
 
 # Scheduler block is retained for SanaConfig compatibility, not used by PPP.
-work_dir: output/RadarGen_600M_512px_TS_PPP
-name: train_radargen_600m_512px_ts_ppp
+work_dir: output/RadarGen_PPP_4GPU_utilization
+name: radargen_ppp_4gpu_utilization
 tracker_project_name: train_radargen_ppp
+report_to: none  # TensorBoard diagnostics will be added separately.

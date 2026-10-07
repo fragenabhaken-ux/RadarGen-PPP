@@ -30,7 +30,7 @@ from radargen.datasets.truckscenes import TruckScenesAdapter
 from radargen.ppp_targets import create_ppp_targets_from_detections
 from radargen.radar_maps.creator import deduplicate_by_pixel, normalize_to_image_coords
 from radargen.training.radargen_dataset import RadarGenDataset
-from radargen.training.radargen_ppp_dataset import build_radargen_ppp_dataset_from_config, read_ppp_sample
+from radargen.training.radargen_ppp_dataset import validate_radargen_ppp_dataset_from_config, read_ppp_sample
 
 
 class UnpublishedSampleProbe(Dataset):
@@ -113,7 +113,7 @@ def assert_same(left, right):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config_path', default='configs/RadarGen_600M_512px_TS_PPP_training.yaml')
+    parser.add_argument('--config_path', default='configs/RadarGen_PPP_WP8_overfit.yaml')
     parser.add_argument('--legacy-bev-dir', default='/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/smoke/bev_condition_maps')
     args = parser.parse_args()
     torch.set_num_threads(1)
@@ -132,7 +132,7 @@ def main():
     probe = UnpublishedSampleProbe(entries, cfg.data.image_size, vars(adapter.normalization).copy())
     blocked = []
     try:
-        completed = build_radargen_ppp_dataset_from_config(cfg)
+        completed = validate_radargen_ppp_dataset_from_config(cfg)
     except ValueError as error:
         if '_SUCCESS.json' not in str(error):
             raise

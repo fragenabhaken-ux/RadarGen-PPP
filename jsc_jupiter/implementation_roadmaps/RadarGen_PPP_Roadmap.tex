@@ -3755,4 +3755,83 @@ choices, and multi-rank stability are verified. Previously documented
 empty-cloud evaluation limitations and populated object-level metric
 checks also remain open. No full training run has been launched.
 
+
+\subsection*{Reusable PPP validation manifests (7 October 2026)}
+
+\paragraph{Implemented startup correction.}
+Job 2205122 confirms that each of four ranks independently enumerated
+and validated the HDF5 inventory. The available log passes 6,596 pairs
+at about 9.5 minutes of validation and continues to 7,954 per rank;
+it does not establish the final split size. Preparation is now separated
+from training in \texttt{scripts/prepare\_ppp\_manifest.py}, with
+\texttt{jsc\_jupiter/prepare\_ppp\_manifest.sbatch} for the existing
+JUPITER booster environment. It is CPU-only in execution (CUDA hidden),
+although the known booster node allocation reserves GPUs. No unavailable
+CPU partition is assumed.
+
+The command reuses adapter enumeration and all existing exact inventory,
+completion-record, metadata/consumed-header, and empty-frame checks.
+It does not scan all payload values, load raw radar, preprocess, load
+models, download assets, or modify HDF5. Progress logs are retained.
+Successful validation publishes versioned, non-executable JSON
+atomically; explicit \texttt{--rebuild} is required to replace an
+existing artifact, which survives failed validation/write/publication.
+
+The manifest stores deterministic scene/pair order, reader metadata,
+file sizes/nanosecond mtimes, completion fingerprints/counts, roots,
+split/version/signature, validation/schema versions, geometry,
+normalization and camera/conditioning order and selection. It excludes
+model/optimizer/batch/GPU/duration knobs and all training arrays.
+Training requires \texttt{data.ppp\_manifest\_path}; it checks JSON
+structure, contract/content identity and per-scene completion records
+without loading TruckScenes, constructing its adapter, enumerating
+inventories or opening all HDF5 files. No silent scan fallback exists.
+Per-item file-change, metadata and target checks and scoped read-only
+HDF5 handles remain. The distributed sampler and lack of double
+sharding are unchanged.
+
+\paragraph{Scope and compatibility.}
+The ordinary and four-GPU utilization configurations select the complete
+illuminated adapter-selected train split. The named WP8 diagnostic
+retains its four samples and separate manifest. Validation data remain
+separate; no validation evaluation or LR experiment is implemented.
+The utilization batch/LR/four-GPU settings remain, with the explicitly
+requested 1,000-update limit restored from the checkout's 100.
+
+New exact-resume contracts record manifest identity before diagnostic
+subsetting, excluding the movable JSON pathname. Legacy checkpoints
+without that identity cannot be resumed automatically into manifest
+training; standalone inspection remains supported. Data and adapter
+metadata must remain immutable. Fast startup cannot detect every
+mutation; size/mtime fingerprints are not cryptographic sample checks.
+Dataset/contract changes require explicit rebuilding. The manifest hash
+is a content identity, not a signature authenticating untrusted authors.
+
+\paragraph{Verification status.}
+Synthetic CPU checks compare fresh and manifest order/length/tensors,
+prove no database/adapter/HDF5 scan at startup, and cover contracts,
+malformed manifests, rebuild/publication failure preservation, changed
+accessed files/completions, inventory/empty-frame rejection, guarded
+CPU/read-only preparation, multiprocess loading/sampler behavior and
+checkpoint identity/legacy compatibility. All nine manifest tests and
+four tiny substitute-model training tests passed, including the original
+three training tests. Configuration-only checks passed for the three
+affected YAMLs; isolated preparation imports, Python compilation, shell
+syntax and whitespace checks passed. Details are recorded in
+\texttt{docs/ppp\_manifest.md}.
+Production manifest creation, full inventory size/preparation duration
+and four-GPU startup timing remain pending. No full scan was run on the
+login node, and no jobs, pretrained models, commits or pushes were run.
+
+\begin{lstlisting}[language=bash]
+# First prepare; wait for successful "manifest published" before training.
+sbatch jsc_jupiter/prepare_ppp_manifest.sbatch \
+  configs/RadarGen_PPP_4GPU_utilization.yaml
+sbatch jsc_jupiter/ppp_4gpu_utilization.sbatch \
+  configs/RadarGen_PPP_4GPU_utilization.yaml
+# Explicit full revalidation/replacement after dataset or contract changes:
+sbatch jsc_jupiter/prepare_ppp_manifest.sbatch \
+  configs/RadarGen_PPP_4GPU_utilization.yaml --rebuild
+\end{lstlisting}
+
 \end{document}
