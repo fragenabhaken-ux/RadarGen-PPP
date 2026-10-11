@@ -131,7 +131,7 @@ class TrainingConfig(BaseConfig):
         default_factory=lambda: {"eps": 1.0e-10, "lr": 0.0001, "type": "AdamW", "weight_decay": 0.03}
     )
     lr_schedule: str = "constant"
-    lr_schedule_args: Dict[str, int] = field(default_factory=lambda: {"num_warmup_steps": 500})
+    lr_schedule_args: Dict[str, Any] = field(default_factory=lambda: {"num_warmup_steps": 500})
     auto_lr: Dict[str, str] = field(default_factory=lambda: {"rule": "sqrt"})
     ema_rate: float = 0.9999
     use_fsdp: bool = False

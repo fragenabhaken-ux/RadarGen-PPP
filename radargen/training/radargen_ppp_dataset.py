@@ -3,6 +3,8 @@
 import json
 import hashlib
 import logging
+import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -64,18 +66,58 @@ def validate_ppp_metadata(handle, expected, *, resolution, point_limit, normaliz
     return n
 
 
-def read_ppp_sample(path, expected, *, resolution, point_limit, normalization, map_transform):
+def read_ppp_sample(path, expected, *, resolution, point_limit, normalization, map_transform,
+                    dataset_index=None, work_dir=None):
     """Materialize one validated sample, close the file, then transform/rasterize."""
     with h5py.File(path, 'r') as handle:
         validate_ppp_metadata(handle, expected, resolution=resolution,
                               point_limit=point_limit, normalization=normalization)
         conditions = {key: handle[f'conditioning/{name}'][()] for name, key in CONDITIONS}
         xy, rcs, doppler = (handle[f'ppp_targets/{key}'][()] for key in ('xy', 'rcs', 'doppler'))
-    if len(rcs) == 0:
-        LOG.warning("Empty PPP frame: scene=%s frame=%s N_stored=0; policy unresolved",
-                    expected['scene_token'], expected['frame_index'])
     mask, rcs_grid, doppler_grid, stats = create_ppp_targets_from_detections(
         xy, rcs, doppler, image_size=resolution, point_limit=point_limit)
+    affected = stats['offending_indices']
+    if not len(rcs) or len(affected):
+        diagnostic = None
+        if work_dir is not None:
+            directory = Path(work_dir)/'data_errors'
+            directory.mkdir(parents=True, exist_ok=True)
+            metadata = dict(dataset_index=dataset_index, source_path=str(Path(path).resolve()),
+                            sample=expected, image_size=resolution, point_limit=point_limit,
+                            normalization=normalization, detection_count=len(rcs),
+                            excluded_count=len(stats['excluded_indices']),
+                            boundary_corrected_count=len(stats['boundary_indices']),
+                            active_cells=stats['active_cells'])
+            identity = hashlib.sha256(json.dumps(dict(path=metadata['source_path'], sample=expected),
+                                                sort_keys=True).encode()).hexdigest()
+            diagnostic = directory/f'sample_{dataset_index}_{identity}.npz'
+            # Publish once, atomically, even if ranks/workers encounter the same sample.
+            with tempfile.NamedTemporaryFile(dir=directory, suffix='.tmp', delete=False) as stream:
+                temporary = Path(stream.name)
+                try:
+                    np.savez_compressed(stream, metadata_json=np.asarray(json.dumps(metadata, sort_keys=True)),
+                        raw_xy=xy, raw_rcs=rcs, raw_doppler=doppler,
+                        offending_indices=affected, offending_xy=xy[affected],
+                        offending_continuous_grid=stats['continuous_grid'][affected],
+                        offending_cell_xy=stats['raw_cell_xy'][affected],
+                        offending_raster_row=resolution-1-stats['raw_cell_xy'][affected, 1],
+                        offending_raster_col=stats['raw_cell_xy'][affected, 0],
+                        corrected_cell_xy=stats['corrected_cell_xy'][affected],
+                        excluded_indices=stats['excluded_indices'],
+                        boundary_corrected_indices=stats['boundary_indices'],
+                        retained_indices=stats['retained_indices'])
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                    try:
+                        os.link(temporary, diagnostic)
+                    except FileExistsError:
+                        pass
+                finally:
+                    temporary.unlink(missing_ok=True)
+        LOG.warning('PPP rasterization adjusted: dataset_index=%s path=%s scene=%s frame=%s '
+                    'detections=%d excluded=%d boundary_corrected=%d active_cells=%d diagnostic=%s',
+                    dataset_index, path, expected['scene_token'], expected['frame_index'], len(rcs),
+                    len(stats['excluded_indices']), len(stats['boundary_indices']), stats['active_cells'], diagnostic)
     output = {key: map_transform(array) for key, array in conditions.items()}
     for key, tensor in output.items():
         if tensor.shape != (3, resolution, resolution) or tensor.dtype != torch.float32 or not torch.isfinite(tensor).all():
@@ -94,7 +136,7 @@ class RadarGenPPPDataset(Dataset):
 
     Initialization reads metadata/dataset headers for selected pairs, not image,
     detection, depth, or annotation arrays. Files must remain immutable afterward.
-    Empty frames explicitly stop initialization; no training policy is assumed.
+    Empty frames are retained and produce zero target grids.
     """
     load_text_feat = False
     load_vae_feat = False
@@ -178,9 +220,6 @@ class RadarGenPPPDataset(Dataset):
             raise ValueError(f'Selected scenes are absent from adapter split {split}: {sorted(wanted-found)}')
         if not self.frame_index:
             raise ValueError(f'No completed PPP pairs selected for split {split}')
-        if self.empty_frame_count:
-            LOG.error('Selected PPP inventory contains %d empty frames; training policy unresolved', self.empty_frame_count)
-            raise ValueError(f'{self.empty_frame_count} empty PPP frames; define an explicit training policy before loading')
         self.ori_imgs_nums = len(self.frame_index)
         startup_log("HDF5 inventory validation end", scenes=len(found), pairs=len(self.frame_index),
                     seconds=f"{time.monotonic()-validation_started:.1f}")
@@ -196,9 +235,14 @@ class RadarGenPPPDataset(Dataset):
             raise ValueError(f'{path}: indexed immutable sample unavailable; restore data or explicitly rebuild manifest') from error
         if path.parent.is_symlink() or path.is_symlink() or (stat.st_size, stat.st_mtime_ns) != (size, mtime):
             raise ValueError(f'{path}: indexed immutable sample changed')
-        sample, _ = read_ppp_sample(path, expected, resolution=self.resolution,
-                                    point_limit=self.point_limit, normalization=self.normalization,
-                                    map_transform=self.map_transform)
+        try:
+            sample, _ = read_ppp_sample(path, expected, resolution=self.resolution,
+                                        point_limit=self.point_limit, normalization=self.normalization,
+                                        map_transform=self.map_transform, dataset_index=index,
+                                        work_dir=getattr(self, 'work_dir', None))
+        except ValueError as error:
+            raise ValueError(f'dataset_index={index} path={path} scene={expected["scene_token"]} '
+                             f'frame={expected["frame_index"]}: {error}') from error
         return sample
 
 
@@ -238,5 +282,7 @@ def build_radargen_ppp_dataset_from_config(config, **kwargs):
     from radargen.training.ppp_manifest import load_ppp_manifest
     if kwargs.get('resolution', config.data.image_size) != config.data.image_size:
         raise ValueError('Dataset and requested resolution must agree')
-    return load_ppp_manifest(config, config_path=kwargs.get('config_path',
-                             'configs/RadarGen_PPP_4GPU_utilization.yaml'))
+    dataset = load_ppp_manifest(config, config_path=kwargs.get('config_path',
+                               'configs/RadarGen_PPP_4GPU_utilization.yaml'))
+    dataset.work_dir = config.work_dir
+    return dataset

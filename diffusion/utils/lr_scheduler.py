@@ -18,7 +18,7 @@ import math
 
 from diffusers import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
 from torch.optim import Optimizer
-from torch.optim.lr_scheduler import LambdaLR
+from torch.optim.lr_scheduler import LambdaLR, ExponentialLR
 
 from diffusion.utils.logger import get_root_logger
 
@@ -35,7 +35,14 @@ def build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio):
         + ",".join([f"{key}:{value}" for key, value in config.lr_schedule_args.items()])
         + "."
     )
-    if config.lr_schedule == "cosine":
+    if config.lr_schedule == "exponential":
+        end_lr = config.lr_schedule_args['end_lr']
+        updates = config.lr_schedule_args['updates']
+        start_lr = optimizer.param_groups[0]['lr']
+        if updates < 2 or not 0 < start_lr < end_lr:
+            raise ValueError('Exponential sweep requires updates >= 2 and 0 < initial LR < end_lr')
+        lr_scheduler = ExponentialLR(optimizer, gamma=(end_lr/start_lr)**(1/(updates-1)))
+    elif config.lr_schedule == "cosine":
         lr_scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
             **config.lr_schedule_args,

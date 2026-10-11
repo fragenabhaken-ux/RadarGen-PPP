@@ -34,7 +34,7 @@ def summarize_fields(fields, point_mask, rcs_target, doppler_target, bounds):
     return result, mass, marks
 
 
-def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, accelerator, step):
+def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, accelerator, step, *, indices=None, lr=None):
     import h5py
     import torch
     from torch.utils.data import default_collate
@@ -48,9 +48,15 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
     log = logging.getLogger('ppp_overfit')
     # Diagnostics must not change the training RNG stream or model modes.
     generator = torch.Generator()
-    rng = capture_rng_state(generator)
+    # Distributed prediction snapshots must not initialize other ranks' CUDA devices.
+    import random
+    if indices is None:
+        rng = capture_rng_state(generator)
+    else:
+        rng = (torch.get_rng_state(), np.random.get_state(), random.getstate(),
+               torch.cuda.get_rng_state(accelerator.device) if accelerator.device.type == 'cuda' else None)
     modes = [(module, module.training) for module in model.modules()]
-    directory = Path(config.work_dir)/'overfit_diagnostics'
+    directory = Path(config.work_dir)/('overfit_diagnostics' if indices is None else 'prediction_images')
     directory.mkdir(parents=True, exist_ok=True)
     bounds = {key: (config.data.extra[key+'_min'], config.data.extra[key+'_max'])
               for key in ('rcs', 'doppler')}
@@ -60,8 +66,18 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
         if encoder.training or any(p.requires_grad or p.grad is not None for p in encoder.parameters()):
             raise ValueError('Condition encoder must remain frozen and in eval mode')
         with torch.no_grad():
-            for index in range(len(dataset)):
+            for index in (range(len(dataset)) if indices is None else indices):
                 sample = dataset[index]
+                if not sample['point_mask'].any().item():
+                    identity = sample['data_info']
+                    skipped = dict(step=step, lr=lr, dataset_index=index,
+                        scene=identity['scene_token'], frame=int(identity['frame_idx']),
+                        reason='empty target mask; visualization skipped')
+                    log.warning('PPP visualization skipped: update=%s dataset_index=%s scene=%s frame=%s; empty target mask',
+                                step, index, skipped['scene'], skipped['frame'])
+                    with (directory/'skipped_samples.jsonl').open('a') as stream:
+                        stream.write(json.dumps(skipped, allow_nan=False)+'\n')
+                    continue
                 batch = send_to_device(default_collate([sample]), accelerator.device)
                 with accelerator.autocast():
                     conditions = encoder([batch[k] for k in ('bev_color_map','bev_seg_map','bev_velocity_map')])
@@ -73,30 +89,52 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                 rcs, doppler = (sample[k][0].numpy() for k in ('rcs_target','doppler_target'))
                 stats, mass, marks = summarize_fields(fields, mask, rcs, doppler, bounds)
                 # Dataset access above validates immutable source and metadata.
-                source = dataset.dataset.frame_index[dataset.indices[index]][0]
+                from torch.utils.data import Subset
+                base, base_index = dataset, index
+                while isinstance(base, Subset):
+                    base_index = base.indices[base_index]
+                    base = base.dataset
+                source = base.frame_index[base_index][0]
                 with h5py.File(source, 'r') as handle:
                     continuous_count = len(handle['ppp_targets/rcs'])
                 identity = sample['data_info']
-                row = dict(step=step, scene=identity['scene_token'], frame=int(identity['frame_idx']),
+                row = dict(step=step, lr=lr, dataset_index=index, scene=identity['scene_token'], frame=int(identity['frame_idx']),
                     continuous_gt_count=continuous_count,
                     count_abs_error_continuous=abs(stats['expected_count']-continuous_count),
                     **stats, **{key: float(value.item()) for key,value in losses.items()})
                 rows.append(row)
-                np.savez_compressed(directory/f'step_{step:06d}_sample_{index}.npz',
-                    fields=fields, point_mask=mask, rcs_target=rcs, doppler_target=doppler)
+                if indices is None:
+                    np.savez_compressed(directory/f'step_{step:06d}_sample_{index}.npz',
+                        fields=fields, point_mask=mask, rcs_target=rcs, doppler_target=doppler)
                 fig, axes = plt.subplots(2,3,figsize=(12,7))
                 panels = (np.log10(np.maximum(mass, 1e-30)), np.where(mask,rcs,np.nan), np.where(mask,doppler,np.nan),
                           mask, marks[0], marks[1])
                 titles = ('log10 predicted cell mass','GT RCS at retained cells','GT Doppler at retained cells',
                           'GT occupied cells','Predicted RCS (physical)','Predicted Doppler (physical)')
                 for ax, panel, title in zip(axes.flat, panels, titles):
-                    im=ax.imshow(panel, origin='upper'); ax.set_title(title); fig.colorbar(im,ax=ax)
-                fig.suptitle(f'Step {step}, frame {row["frame"]}: expected={stats["expected_count"]:.2f}, '
+                    limits = {}
+                    if indices is not None:
+                        low, high = ((-8., 0.) if 'cell mass' in title else
+                                     ((0., 1.) if 'occupied' in title else
+                                      bounds['rcs' if 'RCS' in title else 'doppler']))
+                        limits = dict(vmin=low, vmax=high)
+                    if indices is not None and title.startswith('GT ') and 'occupied' not in title:
+                        yy, xx = np.nonzero(mask)
+                        im = ax.scatter(xx, yy, c=panel[mask], s=6, **limits)
+                        ax.set_xlim(-.5, mask.shape[1]-.5); ax.set_ylim(mask.shape[0]-.5, -.5)
+                        ax.set_aspect('equal')
+                    else:
+                        im=ax.imshow(panel, origin='upper', **limits)
+                    ax.set_title(title); fig.colorbar(im,ax=ax)
+                lr_label = '' if lr is None else f', LR={lr:.6g}'
+                fig.suptitle(f'Step {step}{lr_label}, frame {row["frame"]}: expected={stats["expected_count"]:.2f}, '
                              f'active={stats["active_cell_count"]}, continuous={continuous_count}')
                 fig.tight_layout(); fig.savefig(directory/f'step_{step:06d}_sample_{index}.png',dpi=110); plt.close(fig)
         with (directory/'metrics.jsonl').open('a') as stream:
             for row in rows:
                 stream.write(json.dumps(row, allow_nan=False)+'\n')
+        if not rows:
+            return  # All selected samples were empty; finally still restores RNG/modes.
         mean = {key: float(np.mean([row[key] for row in rows])) for key in
                 ('loss_total','loss_ppp_raw','loss_rcs_raw','loss_doppler_raw','expected_count',
                  'active_cell_count','count_abs_error_active','rcs_mae_at_targets','doppler_mae_at_targets')}
@@ -104,4 +142,9 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
     finally:
         for module, training in modes:
             module.training = training
-        restore_rng_state(rng, generator)
+        if indices is None:
+            restore_rng_state(rng, generator)
+        else:
+            torch.set_rng_state(rng[0]); np.random.set_state(rng[1]); random.setstate(rng[2])
+            if rng[3] is not None:
+                torch.cuda.set_rng_state(rng[3], accelerator.device)

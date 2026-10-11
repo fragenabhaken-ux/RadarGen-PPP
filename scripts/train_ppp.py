@@ -225,6 +225,21 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     from radargen.training.ppp_checkpoint import (save_ppp_checkpoint, load_ppp_checkpoint,
                                                 capture_rng_state, restore_rng_state)
     config = copy.deepcopy(config)
+    if config.train.auto_lr and config.train.auto_lr.get('rule') == 'none':
+        config.train.auto_lr = {}
+    sweep = config.train.extra.get('lr_range_test', False)
+    if sweep and (config.train.lr_schedule != 'exponential' or config.train.auto_lr or
+                  options.resume or config.resume_from or config.model.resume_from or options.smoke_check):
+        raise ValueError('LR sweep requires exponential scheduling, no auto_lr, fresh initialization and no smoke check; '
+                         f'lr_schedule={config.train.lr_schedule!r}, auto_lr={config.train.auto_lr!r}, '
+                         f'resume={options.resume!r}, resume_from={config.resume_from!r}, '
+                         f'model.resume_from={config.model.resume_from!r}, smoke_check={options.smoke_check!r}')
+    if sweep:
+        limit = config.train.lr_schedule_args['updates']
+        if options.max_updates is not None and options.max_updates > limit:
+            raise ValueError('--max-updates exceeds configured LR sweep length')
+        options = copy.copy(options)
+        options.max_updates = options.max_updates or limit
     Path(config.work_dir).mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger('ppp_training')
@@ -240,6 +255,9 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                 cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES", "unset"))
     if options.smoke_check and accelerator.num_processes != 1:
         raise ValueError('The minimal checkpoint mutation smoke check requires one GPU/process')
+    if sweep and (accelerator.num_processes != 4 or config.train.train_batch_size != 5 or
+                  config.train.gradient_accumulation_steps != 1):
+        raise ValueError('LR range run requires four processes, batch size 5 per GPU and accumulation 1')
     if components is None and accelerator.device.type != 'cuda':
         raise ValueError('Pretrained PPP training requires an allocated GPU; use --validate-only on login nodes')
     if options.max_updates is not None and options.max_updates <= 0:
@@ -336,7 +354,11 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     model = accelerator.prepare(model)
     startup_log("DDP model preparation end")
     startup_log("optimizer/scheduler/loader preparation begin")
-    optimizer, scheduler = accelerator.prepare(optimizer, scheduler)
+    if config.train.lr_schedule == 'exponential':
+        # Keep the native scheduler: AcceleratedScheduler otherwise steps once per rank.
+        optimizer = accelerator.prepare(optimizer)
+    else:
+        optimizer, scheduler = accelerator.prepare(optimizer, scheduler)
     loader = prepare_data_loader(loader, device=accelerator.device, num_processes=1, process_index=0,
                                  put_on_device=True, rng_types=[])
     startup_log("optimizer/scheduler/loader preparation end")
@@ -357,6 +379,8 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
 
     def save():
         nonlocal last_saved
+        if sweep:
+            return
         accelerator.wait_for_everyone()
         rng = capture_rng_state(generator)
         ranks = [None] * accelerator.num_processes
@@ -371,13 +395,42 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
             logger.info('PPP checkpoint saved: %s; progress=%s', last_saved, progress)
         accelerator.wait_for_everyone()
 
+    prediction_interval = config.train.extra.get('prediction_interval', 0)
+    last_prediction = None
+    last_used_lr = optimizer.param_groups[0]['lr']
+
     def diagnose():
         if diagnostic_interval:
             from radargen.training.ppp_overfit import diagnose_overfit
             diagnose_overfit(accelerator.unwrap_model(model), encoder, dataset,
                 text_provider, ppp_loss, config, accelerator, progress['global_step'])
 
+    def predict():
+        nonlocal last_prediction
+        if prediction_interval and last_prediction != progress['global_step']:
+            from radargen.training.ppp_overfit import diagnose_overfit
+            error = None
+            if accelerator.is_main_process:
+                try:
+                    indices = config.train.extra.get('prediction_indices', [0])
+                    if config.train.extra.get('prediction_random_sample', False):
+                        import random
+                        # Separate RNG: selecting a visualization must not change training randomness.
+                        indices = [random.Random(config.train.seed + progress['global_step']).randrange(len(dataset))]
+                    diagnose_overfit(accelerator.unwrap_model(model), encoder, dataset,
+                        text_provider, ppp_loss, config, accelerator, progress['global_step'],
+                        indices=indices, lr=last_used_lr)
+                except Exception as exc:
+                    error = f'{type(exc).__name__}: {exc}'
+                    logger.exception('PPP prediction output failed')
+            failed = accelerator.reduce(torch.tensor(int(error is not None), device=accelerator.device),
+                                        reduction='sum').item()
+            if failed:
+                raise RuntimeError(error or 'PPP prediction output failed on main rank; see its traceback')
+            last_prediction = progress['global_step']
+
     diagnose()
+    predict()
     stop = False
     for epoch in range(progress['epoch'], config.train.num_epochs):
         start_batch = progress['batch_in_epoch'] if epoch == progress['epoch'] else 0
@@ -412,8 +465,13 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                 first_update = accelerator.sync_gradients and updates_this_run == 0
                 if first_update:
                     startup_log("first optimizer update begin")
+                used_lr = optimizer.param_groups[0]['lr']
                 optimizer.step()
-                scheduler.step()
+                if config.train.lr_schedule == 'exponential':
+                    if accelerator.sync_gradients and not optimizer.step_was_skipped:
+                        scheduler.step()
+                else:
+                    scheduler.step()
                 # AcceleratedOptimizer suppresses zero_grad until the accumulation boundary.
                 optimizer.zero_grad(set_to_none=True)
             if first_update:
@@ -422,15 +480,18 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
             batches_this_epoch += 1
             progress.update(epoch=epoch, batch_in_epoch=local_batch+1)
             if accelerator.sync_gradients:
+                last_used_lr = used_lr
                 progress['global_step'] += 1
                 updates_this_run += 1
                 values = {key: accelerator.reduce(value.float(), reduction='mean').item() for key,value in logs.items()}
                 values.update(grad_norm=accelerator.reduce(grad_norm.float(), reduction='mean').item(),
-                              lr=scheduler.get_last_lr()[0])
+                              lr=used_lr)
                 if first_update:
                     startup_log("first metric collectives end", global_step=progress["global_step"])
-                if progress['global_step'] % config.train.log_interval == 0 or updates_this_run == 1:
-                    logger.info('PPP update %d: %s', progress['global_step'], values)
+                if (progress['global_step'] % config.train.log_interval == 0 or updates_this_run == 1) and accelerator.is_main_process:
+                    logger.info('%s PPP update %d: %s',
+                                datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds'),
+                                progress['global_step'], values)
                     if config.report_to != 'none':
                         accelerator.log(values, step=progress['global_step'])
                 if options.max_updates is not None and updates_this_run >= options.max_updates:
@@ -443,6 +504,8 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                     save()
                 if diagnostic_interval and (progress['global_step'] % diagnostic_interval == 0 or stop):
                     diagnose()
+                if prediction_interval and (progress['global_step'] % prediction_interval == 0 or stop):
+                    predict()
             del loss, logs
             if stop:
                 break
@@ -454,6 +517,7 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
         sampler.set_start(0)
         if (epoch+1) % config.train.save_model_epochs == 0 or epoch+1 == config.train.num_epochs:
             save()
+    predict()
     if options.smoke_check:
         bare = accelerator.unwrap_model(model)
         parameters = (next(bare.dit.parameters()),bare.ppp_decoder.decoder.project_out.op_list[-1].conv.weight)
