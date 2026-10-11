@@ -200,3 +200,8 @@ cython_debug/
 # Generated HDF5 data
 *.h5
 *.hdf5
+
+# just the trash (TODO: delete)
+*.err
+*.out
+ppp_startup_*.md
