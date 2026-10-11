@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=72
 #SBATCH --gres=gpu:1
 #SBATCH --time=00:15:00
-#SBATCH --output=wp7_evaluation_%j.out
-#SBATCH --error=wp7_evaluation_%j.err
+#SBATCH --output=%x_%j.out
+#SBATCH --error=%x_%j.err
 set -e
 cd /e/project1/nxtaim-1/huber7/repos/RadarGen
 source jsc_jupiter/activate_jupiter.sh

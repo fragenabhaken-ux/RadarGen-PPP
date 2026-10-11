@@ -36,8 +36,8 @@ def inflate_sana_input_channels_for_radargen(model, logger, num_conditions: int 
     logger.info("SANA PatchEmbedMS.proj layer was replaced")
 
 
-def inflate_sana_input_channels_for_ppp(model, logger, num_conditions: int = 3):
-    """Adapt an already initialized 32-channel SANA projection to 96+3 channels."""
+def inflate_sana_input_channels_for_ppp(model, logger, num_conditions: int = 3, *, replicate_weights=True):
+    """Adapt to 99 channels; replicate pretrained weights or initialize independently."""
     old = model.x_embedder.proj
     if (not isinstance(old, nn.Conv2d) or old.in_channels != 32 or old.groups != 1
             or num_conditions != 3 or tuple(model.modality_pe.shape) != (3, 3)):
@@ -48,7 +48,8 @@ def inflate_sana_input_channels_for_ppp(model, logger, num_conditions: int = 3):
                     device=old.weight.device, dtype=old.weight.dtype)
     with torch.no_grad():
         nn.init.xavier_uniform_(new.weight.flatten(1))
-        new.weight[:, :96].copy_(old.weight.repeat(1, 3, 1, 1) / 3)
+        if replicate_weights:
+            new.weight[:, :96].copy_(old.weight.repeat(1, 3, 1, 1) / 3)
         if old.bias is not None:
             new.bias.copy_(old.bias)
     model.x_embedder.proj = new

@@ -68,11 +68,16 @@ def main():
     source.add_argument('--log', type=Path, help='Required input option: Slurm .err update log')
     source.add_argument('--metrics', type=Path, help='Alternative input: older LR metrics JSONL')
     parser.add_argument('--output', type=Path, help='Output image path (default: beside input)')
-    parser.add_argument('--smoothing-beta', type=float, default=0.98,
-                        help='EWMA beta over recorded points, in [0,1); default 0.98')
+    parser.add_argument('--ylim', type=float, nargs=2, metavar=('MIN', 'MAX'),
+                        help='Loss axis limits, e.g. --ylim 10 40')
+    parser.add_argument('--smoothing-beta', type=float, default=0.995,
+                        help='EWMA beta over recorded points, in [0,1); default 0.995')
     args = parser.parse_args()
     if not math.isfinite(args.smoothing_beta) or not 0 <= args.smoothing_beta < 1:
         parser.error('--smoothing-beta must be finite and in [0,1)')
+    if args.ylim and (not all(math.isfinite(v) for v in args.ylim)
+                      or args.ylim[0] >= args.ylim[1]):
+        parser.error('--ylim requires finite MIN < MAX')
     path = args.log or args.metrics
     try:
         points, skipped = read_points(path, args.metrics is not None)
@@ -91,9 +96,11 @@ def main():
             for loss in losses:
                 value = args.smoothing_beta*value + (1-args.smoothing_beta)*loss
                 smooth.append(value)
-            ax.plot(rates, smooth, label=f'EWMA beta={args.smoothing_beta} over recorded points')
+            ax.plot(rates, smooth, label=f'EWMA (smoothing beta={args.smoothing_beta:g})')
         ax.set(xscale='log', xlabel='Recorded optimizer learning rate', ylabel='Total PPP training loss',
                title=f'{path.name}: {len(points)} recorded updates')
+        if args.ylim:
+            ax.set_ylim(*args.ylim)
         ax.grid(True, alpha=0.25)
         ax.legend()
         fig.tight_layout()
@@ -102,7 +109,8 @@ def main():
         fig.savefig(output, dpi=150)
     finally:
         plt.close(fig)
-    print(f'Saved {output} ({len(points)} points, {skipped} skipped records)')
+    print(f'Saved {output} ({len(points)} points, {skipped} skipped records, '
+          f'smoothing beta={args.smoothing_beta:g})')
     if skipped:
         print('Incomplete, invalid, missing-LR or unapplied records were skipped.', file=sys.stderr)
 

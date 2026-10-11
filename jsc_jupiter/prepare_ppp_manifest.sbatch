@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:4
 #SBATCH --time=04:00:00
-#SBATCH --output=ppp_manifest_%j.out
-#SBATCH --error=ppp_manifest_%j.err
+#SBATCH --output=%x_%j.out
+#SBATCH --error=%x_%j.err
 
 # Use the known booster allocation/environment, not an assumed CPU partition.
 # This allocates GPUs but performs only CPU validation with CUDA hidden.

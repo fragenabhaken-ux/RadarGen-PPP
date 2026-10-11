@@ -11,6 +11,8 @@ class RadarGenPPPTrainingModel(nn.Module):
         super().__init__()
         self.dit = dit
         self.ppp_decoder = ppp_decoder
+        self.measure_vram = False
+        self.decoder_vram = None
 
     def forward(self, bev_condition_maps, y, mask=None, data_info=None):
         """Scaled condition latents + 3B empty-text embeddings -> (B,3,1,H,W).
@@ -21,7 +23,20 @@ class RadarGenPPPTrainingModel(nn.Module):
                                device=bev_condition_maps[0].device, dtype=torch.float32)
         predicted = self.dit(timestep=timestep, y=y, mask=mask, data_info=data_info,
                              bev_condition_maps=bev_condition_maps)
+        if self.measure_vram:
+            device = predicted.device
+            torch.cuda.synchronize(device)
+            baseline = torch.cuda.memory_allocated(device)
+            pre_peak = torch.cuda.max_memory_allocated(device)
+            torch.cuda.reset_peak_memory_stats(device)
         decoded = self.ppp_decoder(predicted)
+        if self.measure_vram:
+            torch.cuda.synchronize(device)
+            self.decoder_vram = dict(
+                held=torch.cuda.memory_allocated(device) - baseline,
+                peak_extra=torch.cuda.max_memory_allocated(device) - baseline,
+                pre_peak=pre_peak,
+            )
         if decoded.ndim != 4 or decoded.shape[:2] != (len(PPP_MODALITIES) * batch, 1):
             raise ValueError("PPP decoder must return (3B,1,H,W)")
         return decoded.reshape(batch, len(PPP_MODALITIES), 1, *decoded.shape[-2:])

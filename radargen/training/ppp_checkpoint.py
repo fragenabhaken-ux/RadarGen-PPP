@@ -3,6 +3,7 @@ import logging
 import os
 from pathlib import Path
 import random
+import re
 import tempfile
 
 import numpy as np
@@ -24,7 +25,7 @@ def restore_rng_state(state, generator):
 
 
 def save_ppp_checkpoint(directory, training_model, optimizer, lr_scheduler, *,
-                        progress, contract, generator, rank_rng_states=None):
+                        progress, contract, generator, rank_rng_states=None, keep_last_checkpoints=0):
     """Reuse generic saving with explicit progress/RNG and atomic publication.
 
     Call only after synchronized optimizer steps, with an unwrapped model.
@@ -47,7 +48,26 @@ def save_ppp_checkpoint(directory, training_model, optimizer, lr_scheduler, *,
     pending.unlink(missing_ok=True)
     pending.symlink_to(target.name)
     os.replace(pending, latest)
+    if keep_last_checkpoints:
+        prune_ppp_checkpoints(directory, keep_last_checkpoints, target)
     return str(target)
+
+
+def prune_ppp_checkpoints(directory, keep_last, newest):
+    """Prune only numbered checkpoint files after latest has been published."""
+    if type(keep_last) is not int or keep_last < 1:
+        raise ValueError('keep_last must be a positive integer')
+    directory, newest = Path(directory), Path(newest)
+    pattern = re.compile(r'epoch_(\d+)_step_(\d+)\.pth')
+    candidates = []
+    for path in directory.iterdir():
+        match = pattern.fullmatch(path.name)
+        if match and path.is_file() and not path.is_symlink() and path != newest:
+            candidates.append((int(match[2]), int(match[1]), path))
+    candidates.sort(reverse=True)
+    for _, _, path in candidates[keep_last - 1:]:
+        path.unlink()
+        logging.getLogger('ppp_training').info('Removed old PPP checkpoint: %s', path)
 
 
 def load_ppp_checkpoint(checkpoint_path, training_model, optimizer=None, lr_scheduler=None,

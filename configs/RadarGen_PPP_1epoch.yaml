@@ -75,7 +75,7 @@ train:
   num_workers: 10  # Per GPU process: 40 loader workers across four GPUs.
   seed: 42
   train_batch_size: 5
-  num_epochs: 1
+  num_epochs: 4
   gradient_accumulation_steps: 1
   grad_checkpointing: true
   gradient_clip: 0.1

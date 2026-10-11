@@ -88,14 +88,14 @@ train:
     eps:
       - 1.0e-30
       - 1.0e-16
-    lr: 1.0e-5
+    lr: 5.0e-6
     type: CAMEWrapper
     weight_decay: 0.0
   lr_schedule: exponential
   lr_schedule_args:
     end_lr: 0.001
     updates: 2000
-  log_interval: 20
+  log_interval: 1  # Record every optimizer update for the LR range plot.
   save_model_epochs: 10
   save_model_steps: 10000  # Checkpoint saving is disabled by lr_range_test.
   # An empty mapping is dropped by Pyrallis, restoring its sqrt default.

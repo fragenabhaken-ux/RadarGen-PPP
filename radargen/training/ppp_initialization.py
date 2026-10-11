@@ -25,9 +25,9 @@ class PPPModelComponents:
 def initialize_ppp_model(config, *, null_embed_path, device="cpu", checkpoint_path=None,
                          caption_channels=None, logger=None, model_builder=None,
                          checkpoint_loader=None, vae_loader=None):
-    """Load SANA -> inflate; load DC-AE -> adapt; freeze/unfreeze -> wrap.
+    """Optionally load SANA -> adapt input; load DC-AE -> adapt -> wrap.
 
-    Default loaders require a local SANA file and local DC-AE directory/cache;
+    Default loaders require local DC-AE assets and, when enabled, a local SANA file;
     they do not download checkpoints. Callback injection supports small CPU
     substitute-model tests. This initializes fresh weights, not PPP checkpoints.
     """
@@ -37,15 +37,18 @@ def initialize_ppp_model(config, *, null_embed_path, device="cpu", checkpoint_pa
             or extra.get('num_maps') != 3 or extra.get('num_conditions') != 3):
         raise ValueError('Expected the configured three-modality PPP model with fixed timestep 0.0')
     if config.resume_from or config.model.resume_from:
-        raise ValueError('This helper implements fresh SANA initialization only; PPP resume is not implemented')
+        raise ValueError('This helper implements fresh initialization only; PPP resume is not implemented')
     if config.vae.vae_type != 'dc-ae' or config.vae.weight_dtype != 'float32' or config.vae.vae_latent_dim != 32:
         raise ValueError('PPP requires the FP32 DC-AE with 32 latent channels')
     if not Path(null_embed_path).is_file():
         raise ValueError('An existing baseline-format empty-prompt embedding file is required')
+    load_sana = extra.get('load_sana_weights', True)
+    if not isinstance(load_sana, bool):
+        raise ValueError('model.extra.load_sana_weights must be boolean')
     source = checkpoint_path or config.load_from or config.model.load_from
-    if not source:
+    if load_sana and not source:
         raise ValueError('Pretrained SANA weights are required')
-    if checkpoint_loader is None:
+    if load_sana and checkpoint_loader is None:
         if not Path(source).is_file():
             raise ValueError('Supply checkpoint_path for the local pretrained SANA file; downloads are disabled')
         from diffusion.utils.checkpoint import load_checkpoint
@@ -55,7 +58,7 @@ def initialize_ppp_model(config, *, null_embed_path, device="cpu", checkpoint_pa
         from diffusion.model.builder import build_model
         model_builder = build_model
     if vae_loader is None:
-        validate_local_ppp_assets(source, config.vae.vae_pretrained)
+        validate_local_ppp_assets(source if load_sana else None, config.vae.vae_pretrained)
         def vae_loader(name, model_path, target_device):
             from diffusion.model.builder import get_vae
             return get_vae(name, model_path, target_device)
@@ -80,14 +83,26 @@ def initialize_ppp_model(config, *, null_embed_path, device="cpu", checkpoint_pa
     dit = model_builder(config.model.model, config.train.grad_checkpointing,
                         config.model.fp32_attention, **kwargs).to(device)
     if dit.x_embedder.proj.in_channels != 32:
-        raise ValueError('SANA loading must precede PPP input inflation')
-    _, missing, unexpected, _ = checkpoint_loader(str(source), dit, load_ema=False,
-                                                 null_embed_path=str(null_embed_path))
-    logger.info('SANA missing keys: %s; unexpected keys: %s', missing, unexpected)
-    # Baseline loading deliberately removes fixed pos_embed; modality_pe is new.
-    if set(missing) - {'modality_pe', 'pos_embed'} or unexpected:
-        raise ValueError(f'Unexplained SANA checkpoint mismatch: missing={missing}, unexpected={unexpected}')
-    inflate_sana_input_channels_for_ppp(dit, logger)
+        raise ValueError('PPP initialization requires a bare 32-channel input projection')
+    missing, unexpected = (), ()
+    if load_sana:
+        _, missing, unexpected, _ = checkpoint_loader(str(source), dit, load_ema=False,
+                                                     null_embed_path=str(null_embed_path))
+        logger.info('SANA missing keys: %s; unexpected keys: %s', missing, unexpected)
+        allowed_missing = {'modality_pe', 'pos_embed'}
+        if config.model.qk_norm:
+            # Older SANA checkpoints lack QK norms; retain constructor defaults.
+            allowed_missing.update(
+                f'blocks.{index}.attn.{norm}.{name}'
+                for index, block in enumerate(dit.blocks)
+                for norm in ('q_norm', 'k_norm')
+                for name, _ in getattr(block.attn, norm).named_parameters()
+            )
+        if set(missing) - allowed_missing or unexpected:
+            raise ValueError(f'Unexplained SANA checkpoint mismatch: missing={missing}, unexpected={unexpected}')
+    else:
+        logger.info('SANA weight loading disabled; using random DiT initialization')
+    inflate_sana_input_channels_for_ppp(dit, logger, replicate_weights=load_sana)
     ae = vae_loader(config.vae.vae_type, config.vae.vae_pretrained, device).float()
     ae.requires_grad_(False).eval()
     adapt_ppp_decoder_output(ae.decoder, logger)
@@ -119,15 +134,19 @@ def validate_local_ppp_assets(sana_path, ae_path):
 
     Structural completeness does not establish an upstream checksum match.
     """
-    sana, ae = Path(sana_path), Path(ae_path)
-    if not sana.is_file() or not zipfile.is_zipfile(sana):
-        raise ValueError(f'Missing or incomplete SANA checkpoint: {sana}')
-    with zipfile.ZipFile(sana) as archive:
-        if not any(n.endswith('/data.pkl') for n in archive.namelist()):
-            raise ValueError('SANA checkpoint has no PyTorch state metadata')
-        bad = archive.testzip()
-        if bad:
-            raise ValueError(f'SANA checkpoint CRC failure: {bad}')
+    ae = Path(ae_path)
+    sana_bytes = 0
+    if sana_path is not None:
+        sana = Path(sana_path)
+        if not sana.is_file() or not zipfile.is_zipfile(sana):
+            raise ValueError(f'Missing or incomplete SANA checkpoint: {sana}')
+        with zipfile.ZipFile(sana) as archive:
+            if not any(n.endswith('/data.pkl') for n in archive.namelist()):
+                raise ValueError('SANA checkpoint has no PyTorch state metadata')
+            bad = archive.testzip()
+            if bad:
+                raise ValueError(f'SANA checkpoint CRC failure: {bad}')
+        sana_bytes = sana.stat().st_size
     config_path, weights = ae / 'config.json', ae / 'model.safetensors'
     if not config_path.is_file() or not weights.is_file():
         raise ValueError(f'DC-AE requires config.json and model.safetensors in {ae}')
@@ -146,4 +165,4 @@ def validate_local_ppp_assets(sana_path, ae_path):
         cursor = end
     if 8 + length + cursor != weights.stat().st_size:
         raise ValueError('Incomplete safetensors data')
-    return {'sana_bytes': sana.stat().st_size, 'dc_ae_bytes': weights.stat().st_size}
+    return {'sana_bytes': sana_bytes, 'dc_ae_bytes': weights.stat().st_size}

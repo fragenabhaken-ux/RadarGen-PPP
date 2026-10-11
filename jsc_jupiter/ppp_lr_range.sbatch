@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=288
 #SBATCH --gres=gpu:4
 #SBATCH --time=02:00:00
-#SBATCH --output=jsc_jupiter/logs/ppp_lr_range_%j.out
-#SBATCH --error=jsc_jupiter/logs/ppp_lr_range_%j.err
+#SBATCH --output=jsc_jupiter/logs/%x_%j.out
+#SBATCH --error=jsc_jupiter/logs/%x_%j.err
 
 # Walltime includes startup and prediction rendering; duration is not measured.
 
@@ -25,7 +25,7 @@ export MKL_NUM_THREADS=8
 
 # Dedicated LR sweep; uses the existing full training manifest and local assets.
 PPP_CONFIG="${1:-configs/RadarGen_PPP_LR_range.yaml}"
-PPP_WORK_DIR="output/RadarGen_PPP_LR_range_${SLURM_JOB_ID}"
+PPP_WORK_DIR="output/${SLURM_JOB_NAME}_${SLURM_JOB_ID}"
 test -f "$PPP_CONFIG" || { echo "Missing configuration: $PPP_CONFIG" >&2; exit 1; }
 
 # One Slurm task sees all four allocated GPUs; torchrun starts four DDP workers.

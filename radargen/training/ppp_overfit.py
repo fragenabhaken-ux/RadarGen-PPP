@@ -4,6 +4,32 @@ from pathlib import Path
 import numpy as np
 
 
+def sample_ppp_thinning(cell_mass, rng):
+    """Sample point locations from a piecewise-constant PPP intensity map."""
+    lam = np.asarray(cell_mass, dtype=np.float64)
+    if lam.ndim != 2 or not np.isfinite(lam).all() or np.any(lam < 0):
+        raise ValueError("cell_mass must be a finite, nonnegative 2D array")
+
+    h, w = lam.shape
+    lam_max = float(lam.max())
+    if lam_max == 0:
+        empty = np.zeros(0, dtype=np.float64)
+        return empty, empty, np.zeros(0, dtype=int), np.zeros(0, dtype=int)
+
+    # Each cell has unit area, so the proposal count is lam_max * H * W.
+    n_proposals = int(rng.poisson(lam_max * h * w))
+    if n_proposals == 0:
+        empty = np.zeros(0, dtype=np.float64)
+        return empty, empty, np.zeros(0, dtype=int), np.zeros(0, dtype=int)
+
+    x = rng.random(n_proposals) * w
+    y = rng.random(n_proposals) * h
+    xi = np.minimum(x.astype(int), w - 1)
+    yi = np.minimum(y.astype(int), h - 1)
+
+    keep = rng.random(n_proposals) < (lam[yi, xi] / lam_max)
+    return x[keep], y[keep], xi[keep], yi[keep]
+
 def summarize_fields(fields, point_mask, rcs_target, doppler_target, bounds):
     """Physical diagnostics on a single sample; inputs are detached NumPy arrays."""
     f = np.asarray(fields, dtype=np.float64)
@@ -44,6 +70,7 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    from matplotlib.colors import Normalize
     import logging
     log = logging.getLogger('ppp_overfit')
     # Diagnostics must not change the training RNG stream or model modes.
@@ -97,6 +124,11 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                 source = base.frame_index[base_index][0]
                 with h5py.File(source, 'r') as handle:
                     continuous_count = len(handle['ppp_targets/rcs'])
+                    conditioning_range = float(handle['metadata/conditioning_coordinate_range'][()])
+                    conditioning_images = [
+                        handle[f'conditioning/{name}'][()]
+                        for name in ('appearance', 'semantics', 'velocity')
+                    ]
                 identity = sample['data_info']
                 row = dict(step=step, lr=lr, dataset_index=index, scene=identity['scene_token'], frame=int(identity['frame_idx']),
                     continuous_gt_count=continuous_count,
@@ -106,30 +138,191 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                 if indices is None:
                     np.savez_compressed(directory/f'step_{step:06d}_sample_{index}.npz',
                         fields=fields, point_mask=mask, rcs_target=rcs, doppler_target=doppler)
-                fig, axes = plt.subplots(2,3,figsize=(12,7))
-                panels = (np.log10(np.maximum(mass, 1e-30)), np.where(mask,rcs,np.nan), np.where(mask,doppler,np.nan),
-                          mask, marks[0], marks[1])
-                titles = ('log10 predicted cell mass','GT RCS at retained cells','GT Doppler at retained cells',
-                          'GT occupied cells','Predicted RCS (physical)','Predicted Doppler (physical)')
-                for ax, panel, title in zip(axes.flat, panels, titles):
-                    limits = {}
+
+                # Ignore empty GT cells; include all predicted heatmap values.
+                mark_norms = []
+                for target, prediction in zip((rcs, doppler), marks):
+                    low = float(min(target[mask].min(), prediction.min()))
+                    high = float(max(target[mask].max(), prediction.max()))
+                    if low == high:
+                        padding = max(abs(low) * 0.01, 1.0e-6)
+                        low, high = low - padding, high + padding
+                    mark_norms.append(Normalize(vmin=low, vmax=high))
+                rcs_norm, doppler_norm = mark_norms
+
+                gamma = 0.2
+                h, w = mask.shape
+                sample_rng = np.random.default_rng(
+                    np.random.SeedSequence([int(step), int(index)])
+                )
+                sx, sy, sxi, syi = sample_ppp_thinning(mass, sample_rng)
+                sampled_rcs = marks[0, syi, sxi]
+                sampled_doppler = marks[1, syi, sxi]
+
+                fig, all_axes = plt.subplots(4, 3, figsize=(14, 14))
+                display_range = min(50.0, conditioning_range)
+                for ax, image, title in zip(
+                    all_axes[0], conditioning_images,
+                    ('Conditioning appearance', 'Conditioning semantics', 'Conditioning velocity'),
+                ):
+                    image_h, image_w = image.shape[:2]
+                    # Physical bounds describe the full map, centered on the vehicle.
+                    crop_fraction = display_range / conditioning_range
+                    left = int(np.floor(image_w * (1.0 - crop_fraction) / 2.0))
+                    right = int(np.ceil(image_w * (1.0 + crop_fraction) / 2.0))
+                    top = int(np.floor(image_h * (1.0 - crop_fraction) / 2.0))
+                    bottom = int(np.ceil(image_h * (1.0 + crop_fraction) / 2.0))
+                    ax.imshow(
+                        image[top:bottom, left:right],
+                        origin='upper',
+                        extent=(
+                            conditioning_range * (2.0 * left / image_w - 1.0),
+                            conditioning_range * (2.0 * right / image_w - 1.0),
+                            conditioning_range * (1.0 - 2.0 * bottom / image_h),
+                            conditioning_range * (1.0 - 2.0 * top / image_h),
+                        ),
+                        aspect='equal',
+                    )
+                    ax.set_xlim(-display_range, display_range)
+                    ax.set_ylim(-display_range, display_range)
+                    ax.set_title(title)
+                    ax.set_xlabel('m')
+                    ax.set_ylabel('m')
+                axes = all_axes[1:]
+
+                # 11: GT occupied cells
+                ax = axes[0, 0]
+                im = ax.imshow(
+                    mask.astype(np.uint8),
+                    origin='upper',
+                    extent=(0, w, h, 0),
+                    cmap='gray',
+                    vmin=0,
+                    vmax=1,
+                    aspect='auto',
+                )
+                ax.set_title('GT occupied cells')
+                fig.colorbar(im, ax=ax)
+
+                # 12 and 13: GT marks at occupied cells
+                gt_mark_panels = (
+                    (axes[0, 1], rcs, 'GT RCS', 'viridis', rcs_norm),
+                    (axes[0, 2], doppler, 'GT Doppler', 'coolwarm', doppler_norm),
+                )
+                for ax, target, title, cmap, norm in gt_mark_panels:
                     if indices is not None:
-                        low, high = ((-8., 0.) if 'cell mass' in title else
-                                     ((0., 1.) if 'occupied' in title else
-                                      bounds['rcs' if 'RCS' in title else 'doppler']))
-                        limits = dict(vmin=low, vmax=high)
-                    if indices is not None and title.startswith('GT ') and 'occupied' not in title:
                         yy, xx = np.nonzero(mask)
-                        im = ax.scatter(xx, yy, c=panel[mask], s=6, **limits)
-                        ax.set_xlim(-.5, mask.shape[1]-.5); ax.set_ylim(mask.shape[0]-.5, -.5)
-                        ax.set_aspect('equal')
+                        im = ax.scatter(
+                            xx + 0.5,
+                            yy + 0.5,
+                            c=target[mask],
+                            s=8,
+                            cmap=cmap,
+                            norm=norm,
+                        )
+                        ax.set_xlim(0, w)
+                        ax.set_ylim(h, 0)
+                        ax.set_aspect('auto')
                     else:
-                        im=ax.imshow(panel, origin='upper', **limits)
-                    ax.set_title(title); fig.colorbar(im,ax=ax)
+                        panel = np.where(mask, target, np.nan)
+                        im = ax.imshow(
+                            panel,
+                            origin='upper',
+                            extent=(0, w, h, 0),
+                            cmap=cmap,
+                            norm=norm,
+                            aspect='auto',
+                        )
+                    ax.set_title(title)
+                    fig.colorbar(im, ax=ax)
+
+                # 21, 22, 23: predictions
+                prediction_panels = (
+                    (axes[1, 0], mass, 'Pred λ mass', 'hot', None),
+                    (axes[1, 1], marks[0], 'Pred RCS heatmap', 'viridis', rcs_norm),
+                    (axes[1, 2], marks[1], 'Pred Doppler heatmap', 'coolwarm', doppler_norm),
+                )
+                for ax, panel, title, cmap, norm in prediction_panels:
+                    im = ax.imshow(
+                        panel,
+                        origin='upper',
+                        extent=(0, w, h, 0),
+                        cmap=cmap,
+                        norm=norm,
+                        aspect='auto',
+                    )
+                    ax.set_title(title)
+                    fig.colorbar(im, ax=ax)
+
+                # 31: gamma-adjusted intensity
+                ax = axes[2, 0]
+                im = ax.imshow(
+                    mass ** gamma,
+                    origin='upper',
+                    extent=(0, w, h, 0),
+                    cmap='hot',
+                    aspect='auto',
+                )
+                gt_y, gt_x = np.nonzero(mask)
+                ax.scatter(
+                    gt_x + 0.5,
+                    gt_y + 0.5,
+                    s=8,
+                    color='lightskyblue',
+                    label='GT occupied cells',
+                )
+                ax.legend(loc='upper right')
+                ax.set_title(f'Pred λ^γ (γ={gamma})')
+                fig.colorbar(im, ax=ax)
+
+                # PPP samples colored by their predicted marks.
+                sampled_panels = (
+                    (axes[2, 1], sampled_rcs, 'Sampled points, predicted RCS', 'viridis', rcs_norm),
+                    (axes[2, 2], sampled_doppler, 'Sampled points, predicted Doppler', 'coolwarm', doppler_norm),
+                )
+                for ax, sampled_marks, title, cmap, norm in sampled_panels:
+                    ax.set_facecolor('white')
+                    if len(sx):
+                        points = ax.scatter(
+                            sx,
+                            sy,
+                            c=sampled_marks,
+                            s=8,
+                            cmap=cmap,
+                            norm=norm,
+                        )
+                        fig.colorbar(points, ax=ax, label='Predicted mark')
+                    else:
+                        ax.text(
+                            0.5,
+                            0.5,
+                            'No points sampled',
+                            transform=ax.transAxes,
+                            ha='center',
+                            va='center',
+                            color='black',
+                        )
+                    ax.set_xlim(0, w)
+                    ax.set_ylim(h, 0)
+                    ax.set_aspect('auto')
+                    ax.set_title(f'{title} (N={len(sx)})')
+
                 lr_label = '' if lr is None else f', LR={lr:.6g}'
-                fig.suptitle(f'Step {step}{lr_label}, frame {row["frame"]}: expected={stats["expected_count"]:.2f}, '
-                             f'active={stats["active_cell_count"]}, continuous={continuous_count}')
-                fig.tight_layout(); fig.savefig(directory/f'step_{step:06d}_sample_{index}.png',dpi=110); plt.close(fig)
+                fig.suptitle(
+                    f'Step {step}{lr_label}, frame {row["frame"]}: '
+                    f'expected={stats["expected_count"]:.2f}, '
+                    f'active={stats["active_cell_count"]}, '
+                    f'continuous={continuous_count}',
+                    y=1.01,
+                )
+                fig.tight_layout()
+                fig.savefig(
+                    directory / f'step_{step:06d}_sample_{index}.png',
+                    dpi=110,
+                    bbox_inches='tight',
+                )
+                plt.close(fig)
+
         with (directory/'metrics.jsonl').open('a') as stream:
             for row in rows:
                 stream.write(json.dumps(row, allow_nan=False)+'\n')
@@ -145,6 +338,8 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
         if indices is None:
             restore_rng_state(rng, generator)
         else:
-            torch.set_rng_state(rng[0]); np.random.set_state(rng[1]); random.setstate(rng[2])
+            torch.set_rng_state(rng[0])
+            np.random.set_state(rng[1])
+            random.setstate(rng[2])
             if rng[3] is not None:
                 torch.cuda.set_rng_state(rng[3], accelerator.device)

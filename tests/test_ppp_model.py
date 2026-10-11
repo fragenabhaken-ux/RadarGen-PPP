@@ -34,8 +34,9 @@ class PPPModelChecks(unittest.TestCase):
         def builder(*args, **kwargs):
             calls.append('build')
             return RadarGenPPP(input_size=2, hidden_size=32, depth=1, num_heads=4,
-                               caption_channels=8, model_max_length=300, attn_type='vanilla',
-                               ffn_type='mlp', use_pe=False, class_dropout_prob=0.0)
+                               caption_channels=8, model_max_length=300, attn_type='linear',
+                               ffn_type='mlp', use_pe=False, class_dropout_prob=0.0,
+                               qk_norm=config.model.qk_norm)
         def checkpoint(source, dit, **kwargs):
             self.assertEqual(dit.x_embedder.proj.in_channels,32)
             calls.append('sana')
@@ -66,6 +67,45 @@ class PPPModelChecks(unittest.TestCase):
                                        torch.full_like(result.model.dit.x_embedder.proj.weight[:,:96],0.1))
             self.assertEqual(result.model.ppp_decoder.decoder.project_out.op_list[-1].conv.out_channels,1)
             self.assertFalse(result.condition_encoder.training)
+            config.model.qk_norm = True
+            original_checkpoint = checkpoint
+            def checkpoint(source, dit, **kwargs):
+                _, missing, unexpected, rng = original_checkpoint(source, dit, **kwargs)
+                return 0, missing + ['blocks.0.attn.q_norm.weight',
+                                     'blocks.0.attn.k_norm.weight'], unexpected, rng
+            calls.clear()
+            normalized = initialize_ppp_model(
+                config, null_embed_path=path, caption_channels=8,
+                model_builder=builder, checkpoint_loader=checkpoint, vae_loader=vae)
+            self.assertEqual(calls, ['build', 'sana', 'ae'])
+            for norm in ('q_norm', 'k_norm'):
+                weight = getattr(normalized.model.dit.blocks[0].attn, norm).weight
+                torch.testing.assert_close(weight, torch.ones_like(weight))
+                self.assertTrue(weight.requires_grad)
+            for invalid in ('blocks.0.attn.qkv.weight', 'blocks.99.attn.q_norm.weight'):
+                def invalid_checkpoint(*args, **kwargs):
+                    return 0, [invalid], [], None
+                with self.subTest(missing=invalid), self.assertRaisesRegex(ValueError, 'checkpoint mismatch'):
+                    initialize_ppp_model(
+                        config, null_embed_path=path, caption_channels=8,
+                        model_builder=builder, checkpoint_loader=invalid_checkpoint, vae_loader=vae)
+            config.model.qk_norm = False
+            with self.assertRaisesRegex(ValueError, 'checkpoint mismatch'):
+                initialize_ppp_model(
+                    config, null_embed_path=path, caption_channels=8,
+                    model_builder=builder, checkpoint_loader=checkpoint, vae_loader=vae)
+            config.model.extra['load_sana_weights'] = False
+            config.load_from = config.model.load_from = None
+            calls.clear()
+            random_result = initialize_ppp_model(config, null_embed_path=path, caption_channels=8,
+                                                model_builder=builder, checkpoint_loader=checkpoint, vae_loader=vae)
+            self.assertEqual(calls, ['build', 'ae'])
+            self.assertEqual(random_result.missing_keys, ())
+            weight = random_result.model.dit.x_embedder.proj.weight
+            self.assertEqual(weight.shape[1], 99)
+            self.assertFalse(torch.equal(weight[:, :32], weight[:, 32:64]))
+            self.assertFalse(random_result.condition_encoder.training)
+            self.assertTrue(all(p.requires_grad for p in random_result.model.ppp_decoder.parameters()))
             for invalid_mask in (None, torch.ones(300), torch.zeros(1,300),
                                  torch.full((1,300),2), torch.full((1,300),float('nan'))):
                 with self.subTest(invalid_mask=invalid_mask):

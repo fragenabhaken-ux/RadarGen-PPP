@@ -45,7 +45,7 @@ class RadarGenPPP(RadarGen):
         if mask is not None and (not isinstance(mask, torch.Tensor) or mask.ndim == 0 or mask.shape[0] != expanded_batch or mask.device != first.device):
             raise ValueError("PPP text mask must have batch dimension 3B on the condition device")
         if self.x_embedder.proj.in_channels != 99:
-            raise ValueError("Load pretrained SANA weights and inflate the PPP projection before forwarding")
+            raise ValueError("Adapt the PPP input projection to 99 channels before forwarding")
         conditions = torch.cat(bev_condition_maps, dim=1)
         streams = conditions[:, None].expand(-1, self.num_maps, -1, -1, -1)
         modality = self.modality_pe[None, :, :, None, None].expand(batch, -1, -1, height, width)

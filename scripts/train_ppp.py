@@ -61,6 +61,9 @@ def validate_ppp_config(config: SanaConfig) -> None:
                 "ppp_subset_indices must be distinct nonnegative integers")
     losses = config.train.extra
     require(isinstance(losses, dict), "train.extra must be a dictionary")
+    keep_last = losses.get("keep_last_checkpoints", 0)
+    require(type(keep_last) is int and keep_last >= 0,
+            "keep_last_checkpoints must be a nonnegative integer (0 keeps all)")
     dropout = losses.get("conditioning_dropout", 0.1)
     require(isinstance(dropout, (int, float)) and math.isfinite(dropout) and 0 <= dropout <= 1,
             "conditioning_dropout must be in [0,1]")
@@ -79,8 +82,10 @@ def validate_ppp_config(config: SanaConfig) -> None:
     require(not config.train.use_fsdp, "PPP initially supports the DDP configuration only")
     require(bool(config.work_dir), "root-level work_dir is required")
     require(positive(config.train.gradient_clip), "train.gradient_clip must be positive and finite")
-    for key in ("log_interval", "save_model_steps", "save_model_epochs"):
+    for key in ("log_interval", "save_model_steps"):
         require(getattr(config.train, key) > 0, f"train.{key} must be positive")
+    require(type(config.train.save_model_epochs) is int and config.train.save_model_epochs >= 0,
+            "train.save_model_epochs must be a nonnegative integer (0 disables epoch saves)")
     require(config.train.skip_step == 0, "PPP uses checkpoint progress for resume; train.skip_step must be zero")
     require(not config.train.online_metric, "PPP online evaluation belongs to a later work package")
 
@@ -318,7 +323,8 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     assert_optimizer_membership(model, encoder, optimizer)
     # Preserve baseline warmup scaling and AcceleratedScheduler world-size stepping.
     config.train.lr_schedule_args = copy.deepcopy(config.train.lr_schedule_args)
-    if config.train.lr_schedule_args.get('num_warmup_steps'):
+    if (config.train.lr_schedule != 'epoch_step'
+            and config.train.lr_schedule_args.get('num_warmup_steps')):
         config.train.lr_schedule_args['num_warmup_steps'] *= accelerator.num_processes
     scheduler = build_lr_scheduler(config.train, optimizer, loader, lr_scale_ratio)
     checkpoint_data = asdict(config.data)
@@ -329,7 +335,7 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                     data=checkpoint_data, model=asdict(fresh_config.model), vae=asdict(config.vae),
                     text_encoder=asdict(config.text_encoder), optimizer=config.train.optimizer,
                     lr_schedule=config.train.lr_schedule, lr_args=config.train.lr_schedule_args,
-                    loss=config.train.extra, seed=config.train.seed, gradient_clip=config.train.gradient_clip,
+                    loss={k: v for k, v in config.train.extra.items() if k != 'keep_last_checkpoints'}, seed=config.train.seed, gradient_clip=config.train.gradient_clip,
                     null_embed_path=str(Path(options.null_embed_path).resolve()),
                     text_model_dir=str(Path(options.text_model_dir).resolve()))
     if manifest_identity is not None:
@@ -354,7 +360,7 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     model = accelerator.prepare(model)
     startup_log("DDP model preparation end")
     startup_log("optimizer/scheduler/loader preparation begin")
-    if config.train.lr_schedule == 'exponential':
+    if config.train.lr_schedule in ('exponential', 'epoch_step'):
         # Keep the native scheduler: AcceleratedScheduler otherwise steps once per rank.
         optimizer = accelerator.prepare(optimizer)
     else:
@@ -376,6 +382,7 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     started, last_saved = time.monotonic(), None
     updates_this_run = 0
     first_microbatch = True
+    vram_microbatch = 0
 
     def save():
         nonlocal last_saved
@@ -391,7 +398,8 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
         if accelerator.is_main_process:
             last_saved = save_ppp_checkpoint(Path(config.work_dir)/'checkpoints',
                 accelerator.unwrap_model(model), optimizer, scheduler, progress=dict(progress),
-                contract=contract, generator=generator, rank_rng_states=ranks)
+                contract=contract, generator=generator, rank_rng_states=ranks,
+                keep_last_checkpoints=config.train.extra.get('keep_last_checkpoints', 0))
             logger.info('PPP checkpoint saved: %s; progress=%s', last_saved, progress)
         accelerator.wait_for_everyone()
 
@@ -450,6 +458,25 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
             if first_microbatch:
                 startup_log("first batch received")
                 startup_log("first forward begin")
+            # Measure microbatches 10–12 once per launch, after optimizer warm-up.
+            vram_microbatch += 1
+            measure_vram = (accelerator.is_main_process and accelerator.device.type == 'cuda'
+                            and 10 <= vram_microbatch <= 12)
+            bare = accelerator.unwrap_model(model)
+            bare.measure_vram = measure_vram
+            if measure_vram:
+                torch.cuda.synchronize(accelerator.device)
+                vram_start = torch.cuda.memory_allocated(accelerator.device)
+                torch.cuda.reset_peak_memory_stats(accelerator.device)
+            if config.train.lr_schedule == 'epoch_step':
+                warmup_updates = config.train.lr_schedule_args.get('num_warmup_steps', 0)
+                if progress['global_step'] < warmup_updates:
+                    # Count optimizer updates, independent of GPU count/accumulation.
+                    warmup_factor = (progress['global_step'] + 1) / warmup_updates
+                    epoch_factor = (1.0 if epoch < config.train.lr_schedule_args['switch_epoch']
+                                    else config.train.lr_schedule_args['factor'])
+                    for group, base_lr in zip(optimizer.param_groups, scheduler.base_lrs):
+                        group['lr'] = base_lr * epoch_factor * warmup_factor
             with accelerator.accumulate(model):
                 loss, logs = training_microbatch(model, encoder, batch, text_provider, ppp_loss, config, accelerator)
                 if first_microbatch:
@@ -470,10 +497,28 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                 if config.train.lr_schedule == 'exponential':
                     if accelerator.sync_gradients and not optimizer.step_was_skipped:
                         scheduler.step()
-                else:
+                elif config.train.lr_schedule != 'epoch_step':
                     scheduler.step()
                 # AcceleratedOptimizer suppresses zero_grad until the accumulation boundary.
                 optimizer.zero_grad(set_to_none=True)
+            if measure_vram:
+                torch.cuda.synchronize(accelerator.device)
+                stats = bare.decoder_vram
+                # Decoder resets the peak counter; retain the earlier step peak too.
+                peak = max(stats['pre_peak'], torch.cuda.max_memory_allocated(accelerator.device))
+                gib = 1024 ** 3
+                print(
+                    f"[VRAM] rank=0 microbatch={vram_microbatch} "
+                    f"update={progress['global_step'] + 1} "
+                    f"decoder_forward_held={stats['held'] / gib:.2f} GiB "
+                    f"decoder_forward_peak_extra={stats['peak_extra'] / gib:.2f} GiB "
+                    f"training_peak_allocated={peak / gib:.2f} GiB "
+                    f"training_peak_extra={(peak - vram_start) / gib:.2f} GiB "
+                    f"reserved={torch.cuda.memory_reserved(accelerator.device) / gib:.2f} GiB "
+                    f"optimizer_update={accelerator.sync_gradients}",
+                    file=sys.stderr, flush=True,
+                )
+                bare.measure_vram = False
             if first_update:
                 startup_log("first optimizer update end; metric collectives begin")
             first_microbatch = False
@@ -513,9 +558,15 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
             break
         if not batches_this_epoch and start_batch == 0:
             raise ValueError('PPP rank has no training batches')
+        if config.train.lr_schedule == 'epoch_step':
+            scheduler.step()
+            if accelerator.is_main_process:
+                logger.info('PPP completed epoch %d; next epoch LR=%g',
+                            epoch + 1, optimizer.param_groups[0]['lr'])
         progress.update(epoch=epoch+1, batch_in_epoch=0)
         sampler.set_start(0)
-        if (epoch+1) % config.train.save_model_epochs == 0 or epoch+1 == config.train.num_epochs:
+        if config.train.save_model_epochs and (
+                (epoch+1) % config.train.save_model_epochs == 0 or epoch+1 == config.train.num_epochs):
             save()
     predict()
     if options.smoke_check:

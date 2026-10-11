@@ -1,14 +1,14 @@
 #!/bin/bash
-#SBATCH --job-name=ppp_1epoch
+#SBATCH --job-name=PPP_train
 #SBATCH --account=nxtaim-1
 #SBATCH --partition=booster
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=288
 #SBATCH --gres=gpu:4
-#SBATCH --time=03:00:00
-#SBATCH --output=jsc_jupiter/logs/ppp_1epoch_%j.out
-#SBATCH --error=jsc_jupiter/logs/ppp_1epoch_%j.err
+#SBATCH --time=12:00:00
+#SBATCH --output=jsc_jupiter/logs/%x_%j.out
+#SBATCH --error=jsc_jupiter/logs/%x_%j.err
 
 # Walltime includes startup and prediction rendering; duration is not measured.
 
@@ -23,9 +23,9 @@ export OMP_NUM_THREADS=8
 export OPENBLAS_NUM_THREADS=8
 export MKL_NUM_THREADS=8
 
-# One-epoch training run; uses the existing full training manifest and local assets.
-PPP_CONFIG="${1:-configs/RadarGen_PPP_1epoch.yaml}"
-PPP_WORK_DIR="output/RadarGen_PPP_1epoch_${SLURM_JOB_ID}"
+# Four-epoch training run; uses the existing full training manifest and local assets.
+PPP_CONFIG="${1:-configs/PPP_train.yaml}"
+PPP_WORK_DIR="output/${SLURM_JOB_NAME}_${SLURM_JOB_ID}"
 test -f "$PPP_CONFIG" || { echo "Missing configuration: $PPP_CONFIG" >&2; exit 1; }
 
 # One Slurm task sees all four allocated GPUs; torchrun starts four DDP workers.
@@ -35,4 +35,4 @@ srun --ntasks=1 --cpus-per-task=288 --cpu-bind=verbose --kill-on-bad-exit=1 \
     --standalone --nnodes=1 --nproc-per-node=4 \
     scripts/train_ppp.py \
     --config_path "$PPP_CONFIG" \
-    --work_dir "$PPP_WORK_DIR" 
+    --work_dir "$PPP_WORK_DIR"

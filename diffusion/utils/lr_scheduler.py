@@ -35,7 +35,17 @@ def build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio):
         + ",".join([f"{key}:{value}" for key, value in config.lr_schedule_args.items()])
         + "."
     )
-    if config.lr_schedule == "exponential":
+    if config.lr_schedule == "epoch_step":
+        warmup = config.lr_schedule_args.get('num_warmup_steps', 0)
+        if type(warmup) is not int or warmup < 0:
+            raise ValueError('epoch_step num_warmup_steps must be a nonnegative integer')
+        switch_epoch = config.lr_schedule_args['switch_epoch']
+        factor = config.lr_schedule_args['factor']
+        if type(switch_epoch) is not int or switch_epoch < 1 or not math.isfinite(factor) or factor <= 0:
+            raise ValueError('epoch_step requires a positive integer switch_epoch and positive finite factor')
+        # Stepped once per completed epoch by the PPP trainer, never per update.
+        lr_scheduler = LambdaLR(optimizer, lambda epoch: 1.0 if epoch < switch_epoch else factor)
+    elif config.lr_schedule == "exponential":
         end_lr = config.lr_schedule_args['end_lr']
         updates = config.lr_schedule_args['updates']
         start_lr = optimizer.param_groups[0]['lr']
