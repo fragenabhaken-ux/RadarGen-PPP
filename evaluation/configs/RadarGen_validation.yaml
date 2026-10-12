@@ -1,0 +1,12 @@
+# All illuminated val frame pairs; checkpoint must match model_config architecture.
+dataset_config: configs/PPP_train.yaml
+seed: 42
+device: cuda
+max_samples: null
+plot_dpi: 110
+text_model_dir: /e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it
+model: radargen
+model_config: configs/RadarGen_validation_inference.yaml
+checkpoint_path: null
+num_inference_steps: 20
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/RadarGen_validation
