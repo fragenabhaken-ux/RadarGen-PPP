@@ -75,9 +75,9 @@ scheduler:
 train:
   num_workers: 10  # Per GPU process: 40 loader workers across four GPUs.
   seed: 42
-  train_batch_size: 5
+  train_batch_size: 20
   num_epochs: 6
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 2
   grad_checkpointing: true
   gradient_clip: 0.1
   optimizer:
