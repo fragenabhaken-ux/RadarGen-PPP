@@ -99,7 +99,7 @@ train:
   # An empty mapping is dropped by Pyrallis, restoring its sqrt default.
   auto_lr:
     rule: none
-  work_dir: output/RadarGen_PPP_1epoch
+  work_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/RadarGen_PPP_1epoch
   online_metric: false
   eval_metric_step: 5000
   online_metric_dir: metric_helper
@@ -117,7 +117,7 @@ train:
     prediction_random_sample: true
 
 # Scheduler block is retained for SanaConfig compatibility, not used by PPP.
-work_dir: output/RadarGen_PPP_1epoch
+work_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/RadarGen_PPP_1epoch
 name: radargen_ppp_1epoch
 tracker_project_name: train_radargen_ppp
 report_to: none  # TensorBoard diagnostics will be added separately.

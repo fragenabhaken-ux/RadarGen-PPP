@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --time=00:30:00
 #SBATCH --job-name=radargen_wp5
-#SBATCH --output=%x_%j.out
-#SBATCH --error=%x_%j.err
+#SBATCH --output=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/logs/%j_%x.out
+#SBATCH --error=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/logs/%j_%x.err
 set -euo pipefail
 cd /e/project1/nxtaim-1/huber7/repos/RadarGen
 source jsc_jupiter/activate_jupiter.sh
@@ -18,7 +18,7 @@ export OMP_NUM_THREADS=4
 # Separate output; three updates (six microbatches), then three resumed updates.
 # Preserves optimizer/schedule types, loss weights and conditioning dropout.
 # Shorten warmup to two updates only for this three-update diagnostic.
-WP5_WORK_DIR="output/${SLURM_JOB_NAME}_${SLURM_JOB_ID}"
+WP5_WORK_DIR="/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/${SLURM_JOB_ID}_${SLURM_JOB_NAME}"
 srun python scripts/train_ppp.py \
   --config_path configs/RadarGen_600M_512px_TS_PPP_training.yaml \
   --work_dir "$WP5_WORK_DIR" --report_to none \

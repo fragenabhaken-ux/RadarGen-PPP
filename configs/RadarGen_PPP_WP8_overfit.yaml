@@ -101,7 +101,7 @@ train:
     num_warmup_steps: 20
   log_interval: 10
   save_model_epochs: 10000
-  work_dir: output/RadarGen_PPP_WP8_overfit
+  work_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/RadarGen_PPP_WP8_overfit
   online_metric: false
   eval_metric_step: 5000
   online_metric_dir: metric_helper
@@ -117,7 +117,7 @@ train:
   training_hours: 1.25
   auto_lr:
     rule: sqrt
-work_dir: output/RadarGen_PPP_WP8_overfit
+work_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/RadarGen_PPP_WP8_overfit
 name: radargen_ppp_wp8_overfit
 tracker_project_name: train_radargen_ppp
 report_to: none

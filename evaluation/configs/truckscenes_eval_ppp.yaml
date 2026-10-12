@@ -7,7 +7,7 @@ illuminated_scenes_only: true
 models:
   - name: radargen_ppp
     config_path: configs/RadarGen_600M_512px_TS_PPP_inference.yaml
-    checkpoint_path: output/RadarGen_PPP_WP5_smoke_2164843/checkpoints/epoch_0_step_6.pth
+    checkpoint_path: output/2164843_RadarGen_PPP_WP5_smoke/checkpoints/epoch_0_step_6.pth
     device: cuda
     params:
       seed: 42

@@ -6,8 +6,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --time=00:10:00
 #SBATCH --job-name=radargen_import
-#SBATCH --output=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/logs/%x_%j.out
-#SBATCH --error=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/logs/%x_%j.err
+#SBATCH --output=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/logs/%j_%x.out
+#SBATCH --error=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/logs/%j_%x.err
 
 set -euo pipefail
 

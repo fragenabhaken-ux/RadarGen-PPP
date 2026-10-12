@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=288
 #SBATCH --gres=gpu:4
 #SBATCH --time=12:00:00
-#SBATCH --output=jsc_jupiter/logs/%x_%j.out
-#SBATCH --error=jsc_jupiter/logs/%x_%j.err
+#SBATCH --output=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/logs/%j_%x.out
+#SBATCH --error=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/logs/%j_%x.err
 
 # Walltime includes startup and prediction rendering; duration is not measured.
 
@@ -25,7 +25,7 @@ export MKL_NUM_THREADS=8
 
 # Four-epoch training run; uses the existing full training manifest and local assets.
 PPP_CONFIG="${1:-configs/PPP_train.yaml}"
-PPP_WORK_DIR="output/${SLURM_JOB_NAME}_${SLURM_JOB_ID}"
+PPP_WORK_DIR="/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/${SLURM_JOB_ID}_${SLURM_JOB_NAME}"
 test -f "$PPP_CONFIG" || { echo "Missing configuration: $PPP_CONFIG" >&2; exit 1; }
 
 # One Slurm task sees all four allocated GPUs; torchrun starts four DDP workers.

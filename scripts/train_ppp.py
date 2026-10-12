@@ -294,6 +294,12 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                                           device=accelerator.device)
     model, encoder = components.model.to(accelerator.device), components.condition_encoder.to(accelerator.device)
     encoder.eval()
+    freeze_decoder = config.train.extra.get("freeze_decoder", False)
+    if not isinstance(freeze_decoder, bool):
+        raise ValueError("train.extra.freeze_decoder must be boolean")
+    if freeze_decoder:
+        model.ppp_decoder.requires_grad_(False)
+        logger.info("PPP decoder frozen; gradients through decoder to DiT remain enabled")
     startup_log("model loading end")
     manifest_identity = getattr(dataset, 'manifest_identity', None)
     subset_indices = config.data.extra.get('ppp_subset_indices')
@@ -320,6 +326,9 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                                       config.train.gradient_accumulation_steps,
                                       config.train.optimizer, **config.train.auto_lr)
     optimizer = build_optimizer(model, copy.deepcopy(config.train.optimizer))
+    if freeze_decoder:
+        optimizer.param_groups[:] = [group for group in optimizer.param_groups
+                                     if any(p.requires_grad for p in group["params"])]
     assert_optimizer_membership(model, encoder, optimizer)
     # Preserve baseline warmup scaling and AcceleratedScheduler world-size stepping.
     config.train.lr_schedule_args = copy.deepcopy(config.train.lr_schedule_args)

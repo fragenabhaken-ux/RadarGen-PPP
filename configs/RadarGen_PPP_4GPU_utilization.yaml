@@ -105,7 +105,7 @@ train:
   # Four GPUs, batch 8, accumulation 1: peak LR = 1e-4 * sqrt(32/256) = 3.5355e-5.
   auto_lr:
     rule: sqrt
-  work_dir: output/RadarGen_PPP_4GPU_utilization
+  work_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/RadarGen_PPP_4GPU_utilization
   online_metric: false
   eval_metric_step: 5000
   online_metric_dir: metric_helper
@@ -120,7 +120,7 @@ train:
     overfit_diagnostic_interval: 0
 
 # Scheduler block is retained for SanaConfig compatibility, not used by PPP.
-work_dir: output/RadarGen_PPP_4GPU_utilization
+work_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/RadarGen_PPP_4GPU_utilization
 name: radargen_ppp_4gpu_utilization
 tracker_project_name: train_radargen_ppp
 report_to: none  # TensorBoard diagnostics will be added separately.

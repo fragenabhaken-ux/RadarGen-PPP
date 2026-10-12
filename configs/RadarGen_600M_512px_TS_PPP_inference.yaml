@@ -28,7 +28,7 @@ model:
   image_size: 512
   mixed_precision: bf16
   fp32_attention: true
-  load_from: output/RadarGen_PPP_WP5_smoke_2164843/checkpoints/epoch_0_step_6.pth
+  load_from: output/2164843_RadarGen_PPP_WP5_smoke/checkpoints/epoch_0_step_6.pth
   resume_from:
   aspect_ratio_type: ASPECT_RATIO_512
   attn_type: linear

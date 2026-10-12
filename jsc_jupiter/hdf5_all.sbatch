@@ -8,8 +8,8 @@
 #SBATCH --time=01:00:00
 #SBATCH --array=0-479%4
 #SBATCH --job-name=hdf5_all
-#SBATCH --output=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/%x_%j_%a.out
-#SBATCH --error=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/%x_%j_%a.err
+#SBATCH --output=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/logs/%j_%x_%a.out
+#SBATCH --error=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/logs/%j_%x_%a.err
 
 set -euo pipefail
 cd /e/project1/nxtaim-1/huber7/repos/RadarGen

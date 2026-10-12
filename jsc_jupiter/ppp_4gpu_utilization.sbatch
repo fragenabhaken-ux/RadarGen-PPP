@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=288
 #SBATCH --gres=gpu:4
 #SBATCH --time=01:00:00
-#SBATCH --output=%x_%j.out
-#SBATCH --error=%x_%j.err
+#SBATCH --output=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/logs/%j_%x.out
+#SBATCH --error=/e/project1/nxtaim-1/huber7/repos/RadarGen/jsc_jupiter/logs/%j_%x.err
 
 set -euo pipefail
 cd /e/project1/nxtaim-1/huber7/repos/RadarGen
@@ -23,7 +23,7 @@ export MKL_NUM_THREADS=8
 
 # Save the utilization YAML at this path, or pass its path to sbatch.
 PPP_CONFIG="${1:-configs/RadarGen_PPP_4GPU_utilization.yaml}"
-PPP_WORK_DIR="output/${SLURM_JOB_NAME}_${SLURM_JOB_ID}"
+PPP_WORK_DIR="/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/${SLURM_JOB_ID}_${SLURM_JOB_NAME}"
 test -f "$PPP_CONFIG" || { echo "Missing configuration: $PPP_CONFIG" >&2; exit 1; }
 
 # One Slurm task sees all four allocated GPUs; torchrun starts four DDP workers.
