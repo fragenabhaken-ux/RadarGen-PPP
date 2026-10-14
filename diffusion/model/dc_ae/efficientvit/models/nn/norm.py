@@ -59,9 +59,14 @@ class RMSNorm2d(nn.Module):
             self.register_parameter("bias", None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = (x / torch.sqrt(torch.square(x.float()).mean(dim=1, keepdim=True) + self.eps)).to(x.dtype)
+        # Keep the channel reduction in FP32, but avoid promoting full feature
+        # maps to FP32 for normalization and the affine transform.
+        inv_rms = torch.rsqrt(x.float().square().mean(dim=1, keepdim=True) + self.eps)
+        x = x * inv_rms.to(x.dtype)
         if self.elementwise_affine:
-            x = x * self.weight.view(1, -1, 1, 1) + self.bias.view(1, -1, 1, 1)
+            x = x * self.weight.to(x.dtype).view(1, -1, 1, 1)
+            if self.bias is not None:
+                x = x + self.bias.to(x.dtype).view(1, -1, 1, 1)
         return x
 
 

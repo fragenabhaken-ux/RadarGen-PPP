@@ -43,9 +43,12 @@ class PPPDecoder(nn.Module):
         self.scaling_factor = _scale(scaling_factor)
 
     def forward(self, latent: torch.Tensor) -> torch.Tensor:
-        # FP32 parameters; caller's BF16 autocast may still govern decoder compute.
-        # The cast and division preserve autograd; no detach/no_grad/postprocessing.
-        return self.decoder(latent.float() / self.scaling_factor)
+        # Scale in FP32, then match autocast so residual shortcuts do not promote
+        # the decoder's feature maps back to FP32. Parameters remain FP32.
+        latent = latent.float() / self.scaling_factor
+        if torch.is_autocast_enabled(latent.device.type):
+            latent = latent.to(torch.get_autocast_dtype(latent.device.type))
+        return self.decoder(latent)
 
 
 class FrozenConditionEncoder(nn.Module):
