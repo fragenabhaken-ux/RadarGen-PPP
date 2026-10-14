@@ -21,6 +21,7 @@ import torch
 import torch.nn as nn
 from omegaconf import MISSING, OmegaConf
 from torch import Tensor
+from torch.utils.checkpoint import checkpoint
 
 from ...models.nn.act import build_act
 from ...models.nn.norm import build_norm
@@ -351,6 +352,7 @@ class Decoder(nn.Module):
     def __init__(self, cfg: DecoderConfig):
         super().__init__()
         self.cfg = cfg
+        self.gradient_checkpointing = False
         num_stages = len(cfg.width_list)
         self.num_stages = num_stages
         assert len(cfg.depth_list) == num_stages
@@ -407,12 +409,19 @@ class Decoder(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.project_in(x)
+        # Share the same execution path for frozen and trainable decoder weights.
+        # Inference does not need activation storage or recomputation.
+        def run(module, value):
+            if self.gradient_checkpointing and torch.is_grad_enabled():
+                return checkpoint(module, value, use_reentrant=False)
+            return module(value)
+
+        x = run(self.project_in, x)
         for stage in reversed(self.stages):
             if len(stage.op_list) == 0:
                 continue
-            x = stage(x)
-        x = self.project_out(x)
+            x = run(stage, x)
+        x = run(self.project_out, x)
         return x
 
 

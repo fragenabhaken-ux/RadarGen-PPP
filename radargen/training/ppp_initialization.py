@@ -109,6 +109,11 @@ def initialize_ppp_model(config, *, null_embed_path, device="cpu", checkpoint_pa
     # Match baseline vae_encode/vae_decode: checkpoint cfg overrides fallback.
     scale = ae.cfg.scaling_factor if ae.cfg.scaling_factor else 0.41407
     condition_encoder = FrozenConditionEncoder(ae.encoder, scale)
+    decoder_checkpointing = config.train.extra.get('decoder_grad_checkpointing', config.train.grad_checkpointing)
+    if not isinstance(decoder_checkpointing, bool):
+        raise ValueError('train.extra.decoder_grad_checkpointing must be boolean')
+    ae.decoder.gradient_checkpointing = decoder_checkpointing
+    logger.info('PPP decoder activation checkpointing: %s', decoder_checkpointing)
     decoder = PPPDecoder(ae.decoder, scale)
     model = RadarGenPPPTrainingModel(dit, decoder)
     logger.info('PPP adapted shapes: input=%s modality=%s output=%s',
