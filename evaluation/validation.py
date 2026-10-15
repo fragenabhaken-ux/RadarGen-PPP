@@ -40,25 +40,74 @@ def sample_metrics(points, gt, normalization, mmd_loss, device):
     return json_values(metrics)
 
 
-def plot_ppp_prediction(sample, fields, points, coordinate_range, title):
-    """PPP targets at occupied cells, physical predicted fields, sampled marks."""
+def select_validation_indices(frame_index, count, seed=42):
+    """Select repeatable, scene-balanced frames independent of model RNG/order."""
+    if count == len(frame_index):
+        return list(range(count))
+    scenes = {}
+    for index, (_, expected, _, _) in enumerate(frame_index):
+        scenes.setdefault(expected['scene_token'], []).append(index)
+    rng = np.random.default_rng(seed)
+    groups = []
+    for scene in sorted(scenes):
+        indices = sorted(scenes[scene], key=lambda i: frame_index[i][1]['frame_index'])
+        groups.append(list(rng.permutation(indices)))
+    selected = []
+    while len(selected) < count:
+        for group_index in rng.permutation(len(groups)):
+            if groups[group_index]:
+                selected.append(int(groups[group_index].pop()))
+                if len(selected) == count:
+                    break
+    return selected
+
+
+def plot_ppp_prediction(sample, fields, points, coordinate_range, title, gamma=0.2):
+    """PPP occupied-cell markers, independently scaled mass, and gamma view."""
+    from matplotlib.colors import Normalize
     from radargen.visualization import plot_radargen_prediction
 
+    if not np.isfinite(gamma) or gamma <= 0:
+        raise ValueError('plot_gamma must be finite and positive')
     mask = sample['point_mask'][0].numpy().astype(bool)
     gt = tuple(sample[key][0].numpy() for key in ('point_mask', 'rcs_target', 'doppler_target'))
     pred = (fields['cell_mass_grid'], fields['rcs'], fields['doppler'])
     fig = plot_radargen_prediction(gt, pred, points, coordinate_range=coordinate_range, title=title)
     axes = [ax for ax in fig.axes if ax.get_title()]
+    yy, xx = np.nonzero(mask)
+    h, w = mask.shape
+    x = coordinate_range * (2 * (xx + 0.5) / w - 1)
+    y = coordinate_range * (1 - 2 * (yy + 0.5) / h)
     for col, name in enumerate(('GT occupied cells', 'GT RCS at occupied cells', 'GT Doppler at occupied cells')):
-        axes[col].set_title(name)
-        if col:
-            axes[col].images[0].set_data(np.ma.masked_where(~mask, gt[col]))
+        ax = axes[col]
+        image = ax.images[0]
+        colorbar = image.colorbar
+        cmap, norm = image.cmap, image.norm
+        image.remove()
+        scatter = ax.scatter(x, y, s=8, c=gt[col][mask], cmap=cmap, norm=norm)
+        colorbar.update_normal(scatter)
+        ax.set_title(name)
+        if col == 0:
+            colorbar.set_label('Occupied cells')
+    mass = np.asarray(fields['cell_mass_grid'])
+    density = axes[3].images[0]
+    density.set_norm(Normalize(vmin=float(mass.min()), vmax=float(mass.max())))
+    density.colorbar.set_label('Expected points per cell')
     axes[3].set_title('Predicted PPP cell mass')
-    # The first two density colorbars are not RadarGen probability density.
-    colorbars = [ax for ax in fig.axes if ax not in axes]
-    for ax in colorbars:
-        if ax.get_ylabel() == 'PD':
-            ax.set_ylabel('Occupied cells' if ax is colorbars[0] else 'Expected points per cell')
+    ax = axes[6]
+    ax.clear()
+    image = ax.imshow(mass ** gamma, origin='upper',
+        extent=(-coordinate_range, coordinate_range, -coordinate_range, coordinate_range),
+        cmap='hot', interpolation='nearest')
+    ax.scatter(x, y, s=8, color='lightskyblue', label='GT occupied cells')
+    ax.legend(loc='upper right')
+    ax.set_title(f'Predicted PPP cell mass^γ (γ={gamma})')
+    ax.set_xlim(-coordinate_range, coordinate_range)
+    ax.set_ylim(-coordinate_range, coordinate_range)
+    ax.set_aspect('equal')
+    ax.set_xlabel('x (m)')
+    ax.set_ylabel('y (m)')
+    fig.colorbar(image, ax=ax, label=f'(Expected points per cell)^γ')
     return fig
 
 
@@ -171,6 +220,7 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
     from radargen.visualization import plot_radargen_prediction
 
     mmd = MMDLoss(kernel=RBF(device=device), device=device)
+    selected_indices = provenance.get('selected_indices', list(range(provenance['sample_count'])))
     rows = []
     directory = Path(directory)
     records = directory / 'metrics.jsonl'
@@ -179,7 +229,7 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
         if len(rows) > provenance['sample_count']:
             raise ValueError('More saved records than selected samples')
         for index, row in enumerate(rows):
-            path, expected, _, _ = dataset.frame_index[index]
+            path, expected, _, _ = dataset.frame_index[selected_indices[index]]
             if (row['index'] != index or row['scene'] != expected['scene_token']
                     or row['frame'] != int(expected['frame_index'])
                     or row['source'] != str(path) or not (directory / row['plot']).is_file()):
@@ -188,7 +238,7 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
     try:
         with records.open('a' if resume else 'x') as stream, torch.inference_mode():
             for index in range(len(rows), provenance['sample_count']):
-                path, expected, size, mtime = dataset.frame_index[index]
+                path, expected, size, mtime = dataset.frame_index[selected_indices[index]]
                 stat = path.stat()
                 if path.is_symlink() or (stat.st_size, stat.st_mtime_ns) != (size, mtime):
                     raise ValueError(f'Indexed immutable sample changed: {path}')
@@ -202,7 +252,7 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
                 if gt.shape[1] != 4 or not np.isfinite(gt).all() or not (np.abs(gt[:, :2]) < dataset.point_limit).all():
                     raise ValueError(f'Invalid continuous targets: {path}')
                 # PPP needs the exact training transform/rasterization; RadarGen uses raw conditioning.
-                sample = dataset[index] if config['model'] == 'ppp' else None
+                sample = dataset[selected_indices[index]] if config['model'] == 'ppp' else None
                 if hasattr(predictor, "seed_sample"):
                     predictor.seed_sample(index)
                 points, fields = predictor.predict(sample, conditions)
@@ -221,7 +271,7 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
                     for name in ('rcs', 'doppler'):
                         values = sample[name + '_target'][0].numpy()
                         metrics[name + '_mae_at_target_cells'] = float(np.abs(fields[name][mask] - values[mask]).mean()) if mask.any() else None
-                    fig = plot_ppp_prediction(sample, fields, points, dataset.point_limit, title)
+                    fig = plot_ppp_prediction(sample, fields, points, dataset.point_limit, title, gamma=config.get('plot_gamma', 0.2))
                 else:
                     fig = plot_radargen_prediction(gt_maps, fields, points, coordinate_range=dataset.point_limit, title=title)
                 destination = directory / plot
@@ -276,6 +326,7 @@ def run_validation(config, output_dir=None, max_samples=None, *, resume=False):
     if limit is not None and (not isinstance(limit, int) or limit <= 0):
         raise ValueError('max_samples must be a positive integer or null')
     count = min(len(dataset), limit) if limit is not None else len(dataset)
+    selected_indices = select_validation_indices(dataset.frame_index, count, config.get('selection_seed', 42))
     device = torch.device(config.get('device', 'cuda'))
     if device.type == 'cuda' and not torch.cuda.is_available():
         raise ValueError('CUDA unavailable for requested validation device')
@@ -286,11 +337,12 @@ def run_validation(config, output_dir=None, max_samples=None, *, resume=False):
     model_config.work_dir = str(directory)
     model_config.train.work_dir = str(directory)
     provenance = dict(config, split='val', sample_count=count, available_samples=len(dataset),
+        selected_indices=selected_indices, selection_seed=config.get('selection_seed', 42),
         config_sha256={key: hashlib.sha256(Path(config[key]).read_bytes()).hexdigest()
                        for key in ('dataset_config', 'model_config')},
         checkpoint_size=checkpoint.stat().st_size, checkpoint_mtime_ns=checkpoint.stat().st_mtime_ns,
         inventory_sha256=hashlib.sha256(json.dumps([(str(p), e['scene_token'], e['frame_index'], s, m)
-            for p, e, s, m in dataset.frame_index[:count]]).encode()).hexdigest())
+            for p, e, s, m in (dataset.frame_index[i] for i in selected_indices)]).encode()).hexdigest())
     record = directory / 'validation_config.json'
     if resume:
         if not record.is_file() or json.loads(record.read_text()) != provenance:

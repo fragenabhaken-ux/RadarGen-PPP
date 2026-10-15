@@ -77,7 +77,7 @@ train:
   seed: 42
   train_batch_size: 5
   num_epochs: 300
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 2
   grad_checkpointing: true
   gradient_clip: 0.1
   optimizer:

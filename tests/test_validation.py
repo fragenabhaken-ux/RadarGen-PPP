@@ -10,7 +10,7 @@ import h5py
 import numpy as np
 import torch
 
-from evaluation.validation import evaluate_samples, json_values, sample_metrics
+from evaluation.validation import evaluate_samples, json_values, sample_metrics, plot_ppp_prediction, select_validation_indices
 from radargen.core.normalization import NormalizationConfig
 
 
@@ -60,6 +60,38 @@ class ToyPredictor:
 
 
 class ValidationChecks(unittest.TestCase):
+    def test_scene_selection_is_reproducible_and_order_independent(self):
+        inventory = [(Path(f'{scene}_{frame}.h5'),
+                      dict(scene_token=f'scene_{scene}', frame_index=frame), 0, 0)
+                     for scene in range(40) for frame in range(8)]
+        chosen = select_validation_indices(inventory, 30)
+        self.assertEqual(chosen, select_validation_indices(inventory, 30))
+        self.assertEqual(len(set(chosen)), 30)
+        self.assertEqual(len({inventory[i][1]['scene_token'] for i in chosen}), 30)
+        reverse = inventory[::-1]
+        self.assertEqual([inventory[i][1] for i in chosen],
+                         [reverse[i][1] for i in select_validation_indices(reverse, 30)])
+        self.assertEqual(select_validation_indices(inventory, len(inventory)), list(range(len(inventory))))
+        small = inventory[:16]
+        self.assertEqual(len(set(select_validation_indices(small, 12))), 12)
+
+    def test_ppp_plot_markers_density_range_and_gamma(self):
+        mask = torch.zeros(1, 4, 6)
+        mask[0, 1, 2] = 1
+        sample = dict(point_mask=mask, rcs_target=mask, doppler_target=-mask)
+        mass = np.linspace(0.0001, 0.002, 24).reshape(4, 6)
+        fields = dict(cell_mass_grid=mass, rcs=np.ones((4, 6)), doppler=-np.ones((4, 6)))
+        fig = plot_ppp_prediction(sample, fields, np.array([[0., 0., 1., -1.]]), 50., 'test', gamma=0.3)
+        panels = [ax for ax in fig.axes if ax.get_title()]
+        for ax in panels[:3]:
+            self.assertEqual(ax.collections[0].get_sizes()[0], panels[7].collections[0].get_sizes()[0])
+            np.testing.assert_allclose(ax.collections[0].get_offsets(), [[-50 / 6, 12.5]])
+        self.assertEqual(panels[3].images[0].norm.vmin, mass.min())
+        self.assertEqual(panels[3].images[0].norm.vmax, mass.max())
+        np.testing.assert_allclose(panels[6].images[0].get_array(), mass ** 0.3)
+        fig.canvas.draw()
+        fig.clear()
+
     def test_both_models_all_samples_including_empty_prediction(self):
         for model in ('ppp', 'radargen'):
             with self.subTest(model=model), TemporaryDirectory() as directory:
@@ -68,11 +100,12 @@ class ValidationChecks(unittest.TestCase):
                 output.mkdir()
                 predictor = ToyPredictor(model)
                 config = dict(model=model, seed=42, checkpoint_path='toy.pth', plot_dpi=30)
-                provenance = dict(config, sample_count=2)
+                provenance = dict(config, sample_count=2, selected_indices=[1, 0])
                 with patch('radargen.training.radargen_ppp_dataset.validate_ppp_metadata'):
                     rows = evaluate_samples(dataset, predictor, config, torch.device('cpu'), output, provenance)
                 self.assertEqual(predictor.calls, 2)
                 self.assertEqual(len(rows), 2)
+                self.assertEqual([row["frame"] for row in rows], [1, 0])
                 self.assertEqual(rows[1]['status'], 'empty_cloud')
                 self.assertIsNone(rows[1]['metrics']['chamfer_distance_xy'])
                 self.assertEqual(rows[0]['metrics']['chamfer_distance_xy'], 0.)

@@ -1,6 +1,8 @@
 # All illuminated val frame pairs; checkpoint must match model_config architecture.
 dataset_config: configs/PPP_train.yaml
 seed: 42
+# Shared frame selection, independent of inference randomness.
+selection_seed: 42
 device: cuda
 max_samples: null
 plot_dpi: 110

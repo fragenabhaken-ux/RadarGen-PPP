@@ -88,23 +88,23 @@ train:
     eps:
       - 1.0e-30
       - 1.0e-16
-    lr: 2.0e-5
+    lr: 4.0e-5
     type: CAMEWrapper
     weight_decay: 0.0
   lr_schedule: epoch_step
   lr_schedule_args:
-    switch_epoch: 4
+    switch_epoch: 3
     factor: 0.5
     num_warmup_steps: 200
   log_interval: 20
   save_model_epochs: 0
-  save_model_steps: 5000  # Save at epoch end; also on an orderly time-limit stop.
+  save_model_steps: 1000  # Save at epoch end; also on an orderly time-limit stop.
   # An empty mapping is dropped by Pyrallis, restoring its sqrt default.
   auto_lr:
     rule: none
   work_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/PPP_train_frozen_decoder
   online_metric: false
-  eval_metric_step: 5000
+  eval_metric_step: 1000
   online_metric_dir: metric_helper
   # Initial diagnostic loss weights; physical PPP marks are not rescaled.
   extra:
@@ -118,7 +118,7 @@ train:
     keep_last_checkpoints: 3  # Retain the latest three numbered checkpoints.
     freeze_decoder: true
     lr_range_test: false
-    prediction_interval: 100
+    prediction_interval: 500
     prediction_random_sample: true
 
 # Scheduler block is retained for SanaConfig compatibility, not used by PPP.
