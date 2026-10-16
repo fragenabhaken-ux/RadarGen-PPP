@@ -278,6 +278,9 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
         raise ValueError('PPP resume expects a local checkpoint path or latest, not baseline resume options')
     if resume is not None and not isinstance(resume, str):
         raise ValueError('PPP resume must be a local path or latest')
+    init_from = getattr(options, 'init_from', None)
+    if init_from and resume:
+        raise ValueError('--init-from and resume are mutually exclusive')
     if resume == 'latest':
         resume = str(Path(config.work_dir)/'checkpoints/latest.pth')
     fresh_config = copy.deepcopy(config)
@@ -293,6 +296,9 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
         components = initialize_ppp_model(fresh_config, null_embed_path=options.null_embed_path,
                                           device=accelerator.device)
     model, encoder = components.model.to(accelerator.device), components.condition_encoder.to(accelerator.device)
+    if init_from:
+        load_ppp_checkpoint(init_from, model, resume_optimizer=False, resume_lr_scheduler=False)
+        logger.info('Initialized PPP model weights from %s; optimizer, scheduler and progress start fresh', init_from)
     encoder.eval()
     freeze_decoder = config.train.extra.get("freeze_decoder", False)
     if not isinstance(freeze_decoder, bool):
@@ -620,6 +626,7 @@ def main() -> int:
     parser.add_argument('--validate-only', action='store_true')
     parser.add_argument('--max-updates', type=int, help='Stop after this many optimizer updates in this invocation')
     parser.add_argument('--smoke-check', action='store_true', help='Verify updates and checkpoint mutation/restoration (one GPU)')
+    parser.add_argument('--init-from', help='Load PPP model weights only; start fresh optimizer, scheduler and progress')
     parser.add_argument('--resume', help='Local PPP checkpoint or latest; fresh SANA loading is separate')
     parser.add_argument('--null-embed-path', default='output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth')
     parser.add_argument('--text-model-dir', default='/e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it')

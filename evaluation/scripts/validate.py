@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Validate all preprocessed TruckScenes val pairs for PPP or RadarGen."""
+"""Validate annotated TruckScenes validation keyframes for PPP or RadarGen."""
 import argparse
 import logging
 from pathlib import Path
@@ -17,7 +17,7 @@ def main():
     parser.add_argument('--config', required=True)
     parser.add_argument('--checkpoint', help='Override the local trained checkpoint')
     parser.add_argument('--output-dir', help='Override output directory (must be empty)')
-    parser.add_argument('--max-samples', type=int, help='Optional bounded smoke run; default is the entire validation split')
+    parser.add_argument('--max-samples', type=int, help='Optional bounded smoke run; default is all annotated validation keyframes')
     parser.add_argument('--resume', action='store_true', help='Continue an existing --output-dir with identical config/checkpoint/inventory')
     args = parser.parse_args()
     with open(args.config) as stream:

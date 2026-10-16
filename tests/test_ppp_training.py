@@ -150,6 +150,23 @@ class TrainingChecks(unittest.TestCase):
             config.data.ppp_manifest_path = 'relocated-identical-manifest.json'
             second = run_training(config, options, components=components(), dataset=data, text_provider=text)
             self.assertEqual(second['progress']['global_step'], 2)
+            # A fresh run accepts new accumulation/LR and starts its counters at zero.
+            options.resume = None
+            options.init_from = first['checkpoint']
+            config.work_dir = str(Path(directory) / 'fresh')
+            config.train.gradient_accumulation_steps = 2
+            config.train.optimizer['lr'] = 1e-5
+            config.train.lr_schedule = 'epoch_step'
+            config.train.lr_schedule_args = dict(switch_epoch=2, factor=0.1, num_warmup_steps=200)
+            fresh = run_training(config, options, components=components(), dataset=data, text_provider=text)
+            self.assertEqual(fresh['progress']['global_step'], 1)
+            fresh_state = torch.load(fresh['checkpoint'], map_location='cpu', weights_only=False)
+            self.assertEqual(fresh_state['scheduler']['base_lrs'][0], 1e-5)
+            self.assertAlmostEqual(fresh_state['optimizer']['param_groups'][0]['lr'], 1e-5 / 200)
+            options.resume = first['checkpoint']
+            with self.assertRaisesRegex(ValueError, 'mutually exclusive'):
+                run_training(config, options, components=components(), dataset=data, text_provider=text)
+            options.init_from = None
             data.manifest_identity = dict(data.manifest_identity, sha256='b'*64)
             with self.assertRaisesRegex(ValueError, 'contract differs'):
                 run_training(config, options, components=components(), dataset=data, text_provider=text)

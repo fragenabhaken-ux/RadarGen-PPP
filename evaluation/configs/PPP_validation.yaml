@@ -1,4 +1,4 @@
-# All illuminated val frame pairs; checkpoint must match model_config architecture.
+# Annotated illuminated validation keyframes; checkpoint must match model_config architecture.
 dataset_config: configs/PPP_train.yaml
 seed: 42
 # Shared frame selection, independent of inference randomness.

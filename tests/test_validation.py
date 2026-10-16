@@ -10,7 +10,7 @@ import h5py
 import numpy as np
 import torch
 
-from evaluation.validation import evaluate_samples, json_values, sample_metrics, plot_ppp_prediction, select_validation_indices
+from evaluation.validation import evaluate_samples, json_values, sample_metrics, plot_ppp_prediction, select_validation_indices, select_keyframe_indices, validation_boxes, foreground_metrics, write_reports, class_foreground_mmd
 from radargen.core.normalization import NormalizationConfig
 
 
@@ -20,6 +20,7 @@ class ToyDataset:
     normalization = vars(NormalizationConfig()).copy()
 
     def __init__(self, directory):
+        self.adapter = SimpleNamespace(get_bounding_boxes=lambda *a, **kw: [])
         self.frame_index = []
         for i in range(2):
             path = Path(directory) / f'sample_{i:06d}.h5'
@@ -33,7 +34,7 @@ class ToyDataset:
                 for name in ('point_density', 'rcs', 'doppler'):
                     h[f'radargen_targets/{name}'] = np.ones((8, 8), dtype=np.float32)
             stat = path.stat()
-            self.frame_index.append((path, dict(scene_token='scene', frame_index=i), stat.st_size, stat.st_mtime_ns))
+            self.frame_index.append((path, dict(scene_token='scene', frame_index=i, reference_is_key_frame=True, reference_sample_data_token=str(i)), stat.st_size, stat.st_mtime_ns))
 
     def __getitem__(self, index):
         mask = torch.zeros(1, 8, 8)
@@ -74,6 +75,56 @@ class ValidationChecks(unittest.TestCase):
         self.assertEqual(select_validation_indices(inventory, len(inventory)), list(range(len(inventory))))
         small = inventory[:16]
         self.assertEqual(len(set(select_validation_indices(small, 12))), 12)
+
+    def test_class_mmd_persisted_points_and_missing_classes(self):
+        cloud = [[0., 0., 1., -1.], [1., 2., 3., 4.]]
+        row = dict(foreground_points={side: {'vehicle.car': [cloud]} for side in ('gt', 'syn')})
+        restored = json.loads(json.dumps(row))
+        scores = class_foreground_mmd([restored])
+        for feature in ('xy', 'rcs', 'doppler'):
+            self.assertAlmostEqual(scores[f'invariant_mmd_{feature}_car'], 0.)
+            self.assertIsNone(scores[f'invariant_mmd_{feature}_truck'])
+            self.assertIsNone(scores[f'invariant_mmd_{feature}_trailer'])
+        restored['foreground_points']['syn']['vehicle.car'][0][0][0] = 10.
+        self.assertGreater(class_foreground_mmd([restored])['invariant_mmd_xy_car'], 0.)
+
+    def test_keyframes_filtered_before_limit(self):
+        inventory = [(Path(str(i)), dict(scene_token='scene', frame_index=i,
+                      reference_is_key_frame=i % 3 == 0), 0, 0) for i in range(10)]
+        self.assertEqual(select_keyframe_indices(inventory), [0, 3, 6, 9])
+        selected = select_keyframe_indices(inventory, 2)
+        self.assertEqual(len(selected), 2)
+        self.assertTrue(all(i % 3 == 0 for i in selected))
+        with self.assertRaisesRegex(ValueError, 'No annotated'):
+            select_keyframe_indices(inventory[1:3])
+
+    def test_foreground_empty_boxes_and_object_weighting(self):
+        box = SimpleNamespace(name='vehicle.car', center=np.zeros(3),
+            rotation_matrix=np.eye(3), wlh=np.array([4., 4., 2.]),
+            bottom_corners=lambda: np.array([[-2, -2, 2, 2], [-2, 2, 2, -2], [0, 0, 0, 0]]))
+        adapter = SimpleNamespace(get_bounding_boxes=lambda *a, **kw:
+            [box, SimpleNamespace(name='human.pedestrian')])
+        boxes = validation_boxes(SimpleNamespace(adapter=adapter),
+            dict(reference_is_key_frame=True, reference_sample_data_token='token'))
+        self.assertEqual(boxes, [box])
+        gt = np.array([[0., 0., 1., 1.]])
+        hit = foreground_metrics(gt, gt, boxes, NormalizationConfig(), 'cpu')
+        miss = foreground_metrics(np.empty((0, 4)), gt, boxes, NormalizationConfig(), 'cpu')
+        empty = foreground_metrics(np.empty((0, 4)), np.empty((0, 4)), boxes, NormalizationConfig(), 'cpu')
+        self.assertEqual(hit['per_box_chamfer_distance_xy'], [0.])
+        self.assertEqual(miss['per_box_chamfer_distance_xy'], [])
+        self.assertEqual(miss['per_box_num_points_similarity'], [0.])
+        self.assertEqual(empty['per_box_num_points_similarity'], [1.])
+        with TemporaryDirectory() as directory:
+            rows = [dict(scene='s', frame=i, status='ok', plot='x',
+                    metrics=dict(gt_count=1, generated_count=1),
+                    foreground_box_count=1, foreground=result)
+                    for i, result in enumerate((hit, miss, empty))]
+            write_reports(Path(directory), rows, dict(model='toy', checkpoint_path='toy', sample_count=3))
+            summary = json.loads((Path(directory) / 'summary.json').read_text())['foreground']
+            self.assertEqual(summary['hit_rate'], 0.5)
+            self.assertEqual(summary['per_box_num_points_similarity']['valid_boxes'], 3)
+            self.assertAlmostEqual(summary['per_box_num_points_similarity']['mean'], 2 / 3)
 
     def test_ppp_plot_markers_density_range_and_gamma(self):
         mask = torch.zeros(1, 4, 6)

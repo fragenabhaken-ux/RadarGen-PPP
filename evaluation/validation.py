@@ -1,4 +1,4 @@
-"""Validation of every completed HDF5 frame pair with metrics and matched plots."""
+"""Validation of annotated HDF5 keyframes with metrics and matched plots."""
 
 import hashlib
 import json
@@ -62,6 +62,39 @@ def select_validation_indices(frame_index, count, seed=42):
     return selected
 
 
+def select_keyframe_indices(frame_index, count=None, seed=42):
+    """Filter authoritative reference-sensor keyframes before balanced selection."""
+    eligible = [i for i, (_, expected, _, _) in enumerate(frame_index)
+                if expected['reference_is_key_frame']]
+    if not eligible:
+        raise ValueError('No annotated validation keyframes available')
+    count = len(eligible) if count is None else min(count, len(eligible))
+    return [eligible[i] for i in select_validation_indices(
+        [frame_index[i] for i in eligible], count, seed)]
+
+
+def validation_boxes(dataset, expected):
+    """Load annotated keyframe boxes in the same flat-up frame as radar XY."""
+    if not expected['reference_is_key_frame']:
+        raise ValueError('Foreground validation requires an annotated keyframe')
+    boxes = dataset.adapter.get_bounding_boxes(
+        {}, ref_sensor_token=expected['reference_sample_data_token'])
+    # TruckScenes category names are hierarchical, e.g. vehicle.car.
+    return [box for box in boxes
+            if box.name.lower().split('.')[-1] in {'car', 'truck', 'trailer'}]
+
+
+def foreground_metrics(points, gt, boxes, normalization, device, *, include_points=False):
+    from evaluation.metrics import compute_box_metrics_and_stats
+    result = compute_box_metrics_and_stats(points, gt, boxes, device, normalization)
+    scores = json_values({key: value for key, value in result.items()
+                          if 'invariant_pcl' not in key})
+    if include_points:
+        return scores, json_values({side: result[f'per_box_invariant_pcl_{side}']
+                                    for side in ('gt', 'syn')})
+    return scores
+
+
 def plot_ppp_prediction(sample, fields, points, coordinate_range, title, gamma=0.2):
     """PPP occupied-cell markers, independently scaled mass, and gamma view."""
     from matplotlib.colors import Normalize
@@ -83,12 +116,16 @@ def plot_ppp_prediction(sample, fields, points, coordinate_range, title, gamma=0
         image = ax.images[0]
         colorbar = image.colorbar
         cmap, norm = image.cmap, image.norm
-        image.remove()
-        scatter = ax.scatter(x, y, s=8, c=gt[col][mask], cmap=cmap, norm=norm)
-        colorbar.update_normal(scatter)
-        ax.set_title(name)
         if col == 0:
-            colorbar.set_label('Occupied cells')
+            colorbar.remove()
+        image.remove()
+        if col == 0:
+            ax.set_facecolor('black')
+            ax.scatter(x, y, s=8, color='white')
+        else:
+            scatter = ax.scatter(x, y, s=8, c=gt[col][mask], cmap=cmap, norm=norm)
+            colorbar.update_normal(scatter)
+        ax.set_title(name)
     mass = np.asarray(fields['cell_mass_grid'])
     density = axes[3].images[0]
     density.set_norm(Normalize(vmin=float(mass.min()), vmax=float(mass.max())))
@@ -182,7 +219,31 @@ class RadarGenPredictor:
         return np.column_stack((xy, rcs, doppler)), pred
 
 
-def write_reports(directory, rows, provenance):
+def class_foreground_mmd(rows, device='cpu'):
+    """Reuse the evaluator's object-local, class-wise MMD and sampling policy."""
+    from evaluation.aggregation import create_aggregator, finalize_global_metrics
+
+    classes = ['car', 'truck', 'trailer']
+    aggregator = create_aggregator()
+    for row in rows:
+        for side, groups in row.get('foreground_points', {}).items():
+            per_class = {}
+            for name, clouds in groups.items():
+                category = name.lower().split('.')[-1]
+                if category not in classes:
+                    continue
+                valid = [np.asarray(cloud, dtype=np.float64).reshape(-1, 4)
+                         for cloud in clouds if len(cloud)]
+                per_class.setdefault(category, []).extend(valid)
+            for category, clouds in per_class.items():
+                if clouds:
+                    aggregator['agg_points_per_class'][category][side].append(np.vstack(clouds))
+    results = finalize_global_metrics(aggregator, device, classes, LOG)
+    return json_values({key: value for key, value in results.items()
+                        if key.startswith('invariant_mmd_')})
+
+
+def write_reports(directory, rows, provenance, device='cpu'):
     """Rewrite human-readable reports from the durable per-sample records."""
     keys = sorted({key for row in rows for key in row['metrics']})
     with (directory / 'metrics.txt').open('w') as stream:
@@ -201,12 +262,38 @@ def write_reports(directory, rows, provenance):
         values = [row['metrics'][key] for row in rows if row['metrics'].get(key) is not None]
         summary['metrics'][key] = dict(mean=float(np.mean(values)) if values else None,
             std=float(np.std(values)) if values else None, valid_samples=len(values))
+    foreground_keys = sorted({k for row in rows for k in row.get('foreground', {})})
+    summary['foreground'] = {}
+    for key in foreground_keys:
+        if key.startswith('n_'):
+            continue
+        values = [value for row in rows for value in row.get('foreground', {}).get(key, [])
+                  if value is not None]
+        summary['foreground'][key] = dict(
+            mean=float(np.mean(values)) if values else None,
+            std=float(np.std(values)) if values else None, valid_boxes=len(values))
+    hits = sum(row.get('foreground', {}).get('n_hits', 0) for row in rows)
+    misses = sum(row.get('foreground', {}).get('n_fn_boxes', 0) for row in rows)
+    summary['foreground'].update(class_foreground_mmd(rows, device))
+    summary['foreground']['mmd_sampling'] = (
+        'Existing evaluator policy: pool nonempty object-local clouds per class and frame; '
+        'use every third nonempty frame, up to 200 frames per class and side.')
+    summary['foreground']['hit_rate'] = hits / (hits + misses) if hits + misses else None
+    summary['foreground']['gt_positive_boxes'] = int(hits + misses)
+    summary['foreground']['evaluated_boxes'] = sum(row.get('foreground_box_count', 0) for row in rows)
+    (directory / 'foreground_metrics.jsonl').write_text(''.join(
+        json.dumps({k: row[k] for k in ('scene', 'frame', 'foreground_box_count', 'foreground')},
+                   allow_nan=False) + '\n' for row in rows if 'foreground' in row))
     (directory / 'summary.json').write_text(json.dumps(summary, indent=2, allow_nan=False) + '\n')
     with (directory / 'summary.txt').open('w') as stream:
         for key, value in summary.items():
-            if key != 'metrics':
+            if key not in ('metrics', 'foreground'):
                 stream.write(f'{key}: {value}\n')
         stream.write('\nUndefined distances/MMD for empty clouds are NA and excluded from those means.\n')
+        stream.write('\nForeground (aggregated over individual boxes):\n')
+        for key, value in summary['foreground'].items():
+            stream.write(f'{key}: {value}\n')
+        stream.write('\nEntire Area (aggregated over keyframes):\n')
         for key, stats in summary['metrics'].items():
             stream.write(f"{key}: mean={stats['mean']}, std={stats['std']}, valid_samples={stats['valid_samples']}\n")
 
@@ -234,7 +321,7 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
                     or row['frame'] != int(expected['frame_index'])
                     or row['source'] != str(path) or not (directory / row['plot']).is_file()):
                 raise ValueError('Saved records or plots do not match the selected inventory')
-    write_reports(directory, rows, provenance)
+    write_reports(directory, rows, provenance, device)
     try:
         with records.open('a' if resume else 'x') as stream, torch.inference_mode():
             for index in range(len(rows), provenance['sample_count']):
@@ -260,13 +347,17 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
                     raise ValueError(f'Invalid predicted point cloud: {path}')
                 from radargen.core.normalization import NormalizationConfig
                 metrics = sample_metrics(points, gt, NormalizationConfig(**dataset.normalization), mmd, device)
+                boxes = validation_boxes(dataset, expected)
+                foreground, foreground_points = foreground_metrics(
+                    points, gt, boxes, NormalizationConfig(**dataset.normalization), device, include_points=True)
                 scene, frame = expected['scene_token'], int(expected['frame_index'])
                 plot = f'plots/{scene}/sample_{frame:06d}.png'
                 title = f"{config['model']} validation: {scene}, frame {frame}; GT={len(gt)}, generated={len(points)}"
                 if config['model'] == 'ppp':
                     mass = fields['cell_mass_grid']
-                    analytic = compute_ppp_count_metrics(mass, gt, [], make_ppp_grid_xy(*mass.shape, dataset.point_limit))
+                    analytic = compute_ppp_count_metrics(mass, gt, boxes, make_ppp_grid_xy(*mass.shape, dataset.point_limit))
                     metrics.update({k: v for k, v in analytic.items() if not isinstance(v, list)})
+                    foreground.update({k: v for k, v in analytic.items() if isinstance(v, list)})
                     mask = sample['point_mask'][0].numpy().astype(bool)
                     for name in ('rcs', 'doppler'):
                         values = sample[name + '_target'][0].numpy()
@@ -274,6 +365,23 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
                     fig = plot_ppp_prediction(sample, fields, points, dataset.point_limit, title, gamma=config.get('plot_gamma', 0.2))
                 else:
                     fig = plot_radargen_prediction(gt_maps, fields, points, coordinate_range=dataset.point_limit, title=title)
+                    from matplotlib.colors import LinearSegmentedColormap
+                    ax = [axis for axis in fig.axes if axis.get_title()][6]
+                    ax.clear()
+                    image = ax.imshow(fields[0], origin='upper',
+                        extent=(-dataset.point_limit, dataset.point_limit,
+                                -dataset.point_limit, dataset.point_limit),
+                        cmap=LinearSegmentedColormap.from_list('black_red', ['black', 'red']),
+                        vmin=0, interpolation='nearest')
+                    ax.scatter(gt[:, 0], gt[:, 1], s=8, color='blue', label='GT points')
+                    ax.legend(loc='upper right')
+                    ax.set_title('Predicted PD with GT points')
+                    ax.set_xlim(-dataset.point_limit, dataset.point_limit)
+                    ax.set_ylim(-dataset.point_limit, dataset.point_limit)
+                    ax.set_aspect('equal')
+                    ax.set_xlabel('x (m)')
+                    ax.set_ylabel('y (m)')
+                    fig.colorbar(image, ax=ax, label='PD')
                 destination = directory / plot
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 try:
@@ -283,15 +391,16 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
                 status = 'ok' if len(gt) and len(points) else 'empty_cloud'
                 row = json_values(dict(index=index, scene=scene, frame=frame, source=str(path),
                     model=config['model'], checkpoint=config['checkpoint_path'], seed=config['seed'],
-                    status=status, plot=plot, metrics=metrics))
+                    status=status, plot=plot, metrics=metrics,
+                    foreground_box_count=len(boxes), foreground=foreground, foreground_points=foreground_points))
                 stream.write(json.dumps(row, allow_nan=False) + '\n')
                 stream.flush()
                 rows.append(row)
                 if len(rows) % 100 == 0:
-                    write_reports(directory, rows, provenance)
+                    write_reports(directory, rows, provenance, device)
                 LOG.info('Validated %d/%d: %s frame %d', index + 1, provenance['sample_count'], scene, frame)
     finally:
-        write_reports(directory, rows, provenance)
+        write_reports(directory, rows, provenance, device)
     return rows
 
 
@@ -325,8 +434,9 @@ def run_validation(config, output_dir=None, max_samples=None, *, resume=False):
     limit = max_samples if max_samples is not None else config.get('max_samples')
     if limit is not None and (not isinstance(limit, int) or limit <= 0):
         raise ValueError('max_samples must be a positive integer or null')
-    count = min(len(dataset), limit) if limit is not None else len(dataset)
-    selected_indices = select_validation_indices(dataset.frame_index, count, config.get('selection_seed', 42))
+    selected_indices = select_keyframe_indices(dataset.frame_index, limit, config.get('selection_seed', 42))
+    count = len(selected_indices)
+    LOG.info('Selected %d annotated keyframes from %d frame pairs', count, len(dataset))
     device = torch.device(config.get('device', 'cuda'))
     if device.type == 'cuda' and not torch.cuda.is_available():
         raise ValueError('CUDA unavailable for requested validation device')
@@ -336,7 +446,8 @@ def run_validation(config, output_dir=None, max_samples=None, *, resume=False):
         raise ValueError(f'Output directory must be empty to prevent mixing runs: {directory}')
     model_config.work_dir = str(directory)
     model_config.train.work_dir = str(directory)
-    provenance = dict(config, split='val', sample_count=count, available_samples=len(dataset),
+    provenance = dict(config, split='val', validation_version=3, keyframes_only=True,
+        foreground_classes=['car', 'truck', 'trailer'], sample_count=count, available_samples=len(dataset),
         selected_indices=selected_indices, selection_seed=config.get('selection_seed', 42),
         config_sha256={key: hashlib.sha256(Path(config[key]).read_bytes()).hexdigest()
                        for key in ('dataset_config', 'model_config')},

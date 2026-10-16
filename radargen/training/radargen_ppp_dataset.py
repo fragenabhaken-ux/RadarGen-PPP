@@ -151,6 +151,7 @@ class RadarGenPPPDataset(Dataset):
         if scene_tokens is not None and (not isinstance(scene_tokens, list) or not scene_tokens or
                 any(not isinstance(s, str) for s in scene_tokens) or len(set(scene_tokens)) != len(scene_tokens)):
             raise ValueError('scene_tokens must be a nonempty list of distinct scene tokens or None')
+        self.adapter = adapter
         self.resolution = resolution
         self.point_limit = adapter.normalization.coordinate_range
         self.normalization = vars(adapter.normalization).copy()
