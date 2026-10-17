@@ -16,10 +16,33 @@ from .radargen_ppp_training_model import RadarGenPPPTrainingModel
 
 @dataclass
 class PPPModelComponents:
-    model: RadarGenPPPTrainingModel
-    condition_encoder: FrozenConditionEncoder
+    model: torch.nn.Module
+    condition_encoder: torch.nn.Module | None
     missing_keys: tuple[str, ...]
     unexpected_keys: tuple[str, ...]
+
+
+def initialize_dino_ppp_model(config, *, device="cpu", load_pretrained=True):
+    """Build the direct BEV predictor; a full PPP checkpoint needs no RGB weights.
+
+    The shared RGB DINO processes each BEV condition with its own LoRA before
+    feature fusion and prediction of three raw radar fields. There is no
+    conditioning autoencoder or text encoder.
+    """
+    from radargen.models.dino_ppp import DinoPPP
+
+    kwargs = dict(config.model.extra or {})
+    if load_pretrained:
+        checkpoint = kwargs.get("checkpoint_path", "")
+        if not checkpoint or not Path(checkpoint).is_file():
+            raise FileNotFoundError(f"Local DINOv3 checkpoint unavailable: {checkpoint}")
+    else:
+        # Resume/inference restores every parameter from the trained PPP model.
+        kwargs["checkpoint_path"] = ""
+        kwargs["pretrained"] = False
+    kwargs.setdefault("grad_checkpointing", config.train.grad_checkpointing)
+    model = DinoPPP(**kwargs).to(device)
+    return PPPModelComponents(model, None, (), ())
 
 
 def initialize_ppp_model(config, *, null_embed_path, device="cpu", checkpoint_path=None,

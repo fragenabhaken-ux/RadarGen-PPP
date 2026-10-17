@@ -37,7 +37,7 @@ dependencies = [
     "sentencepiece",
     "tensorboard",
     "tensorboardX",
-    "timm",
+    "timm>=1.0.20",
     "transformers",
     "triton==3.0.0",
     "wandb",

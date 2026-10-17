@@ -8,6 +8,9 @@
 
 ### 💡 TL;DR: RadarGen generates sparse radar point clouds from multi-view camera images.
 
+The [direct DINOv3 BEV predictor](docs/dino_ppp.md) predicts PPP radar fields from
+three BEV conditioning maps using the existing PPP losses.
+
 <p align="center">
   <img src="assets/teaser.gif" width="90%" style="border-radius: 10px;" alt="teaser" />
 </p>

@@ -14,7 +14,7 @@ from diffusion.utils.config import SanaConfig
 
 
 def validate_ppp_config(config: SanaConfig) -> None:
-    """Check the roadmap's configuration contract without runtime initialization."""
+    """Validate data/training settings without loading models or HDF5 samples."""
     def require(condition, message):
         if not condition:
             raise ValueError(message)
@@ -44,16 +44,21 @@ def validate_ppp_config(config: SanaConfig) -> None:
         bounds = [data.get(f"{prefix}_{suffix}") for suffix in ("min", "max")]
         require(all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in bounds), f"{prefix} bounds must be finite numbers")
         require(bounds[0] < bounds[1], f"{prefix}_min must be less than {prefix}_max")
-    require(config.model.model == "RadarGenPPP_600M_P1_D28", "model.model must be RadarGenPPP_600M_P1_D28")
+    direct = config.model.model == "DinoPPP"
+    require(direct or config.model.model == "RadarGenPPP_600M_P1_D28", "Unknown PPP model")
     require(config.data.image_size == config.model.image_size == 512, "PPP data/model image_size must be 512")
     model = config.model.extra
     require(isinstance(model, dict), "model.extra must be a dictionary")
-    require(model.get("num_maps") == model.get("num_conditions") == 3, "PPP requires three modalities and three conditions")
-    require(model.get("fixed_timestep") == 0.0, "model.extra.fixed_timestep must be 0.0")
     require(config.model.mixed_precision == "bf16", "PPP mixed_precision must be bf16")
-    require(config.vae.vae_type == "dc-ae" and config.vae.weight_dtype == "float32", "PPP requires dc-ae with float32 weights")
-    require(config.vae.vae_latent_dim == config.vae.vae_downsample_rate == 32, "PPP requires 32 latent channels and downsample rate 32")
-    require(bool(config.vae.vae_pretrained), "vae.vae_pretrained is required")
+    if direct:
+        require(bool(model.get("checkpoint_path")), "model.extra.checkpoint_path must name the local DINOv3 weights")
+        require(not config.train.extra.get("freeze_decoder", False), "DinoPPP trains its spatial prediction head")
+    else:
+        require(model.get("num_maps") == model.get("num_conditions") == 3, "PPP requires three modalities and three conditions")
+        require(model.get("fixed_timestep") == 0.0, "model.extra.fixed_timestep must be 0.0")
+        require(config.vae.vae_type == "dc-ae" and config.vae.weight_dtype == "float32", "PPP requires dc-ae with float32 weights")
+        require(config.vae.vae_latent_dim == config.vae.vae_downsample_rate == 32, "PPP requires 32 latent channels and downsample rate 32")
+        require(bool(config.vae.vae_pretrained), "vae.vae_pretrained is required")
     indices = data.get("ppp_subset_indices")
     if indices is not None:
         require(isinstance(indices, list) and bool(indices) and
@@ -91,8 +96,14 @@ def validate_ppp_config(config: SanaConfig) -> None:
 
 
 def compute_ppp_losses(decoded, batch, ppp_loss, settings):
-    """Raw decoded fields -> WP3 FP32 links/reductions, applied exactly once."""
+    """Raw radar fields -> existing FP32 PPP and physical-mark losses.
+
+    Direct predictions are (B,3,H,W); older latent models include a singleton
+    field dimension, (B,3,1,H,W). Both use [log-intensity, RCS, Doppler].
+    """
     from radargen.losses.mark_losses import masked_rcs_l1, masked_doppler_loss
+    if decoded.ndim == 4:
+        decoded = decoded.unsqueeze(2)
     if decoded.ndim != 5 or decoded.shape[1:3] != (3, 1):
         raise ValueError('Decoded PPP fields must have shape (B,3,1,H,W)')
     mask, rcs, doppler = (batch[k] for k in ('point_mask', 'rcs_target', 'doppler_target'))
@@ -113,64 +124,26 @@ def compute_ppp_losses(decoded, batch, ppp_loss, settings):
 
 
 def training_microbatch(model, condition_encoder, batch, text_provider, ppp_loss, config, accelerator):
-    """Main training: Predict radar fields and compute losses for one microbatch.
+    """Predict from appearance, semantics and velocity maps, then apply PPP losses.
 
-    Only conditioning maps enter the frozen encoder. Ground-truth radar
-    targets are used by the losses, not as model inputs. This function
-    does not call backward() or update model parameters.
-
-    Args:
-        model: Trainable PPP model combining the DiT and scalar decoder.
-        condition_encoder: Frozen encoder returning three scaled latent
-            tensors, each shaped (B, 32, L, L).
-        batch: Dictionary containing:
-            bev_color_map: Appearance conditioning, shaped (B, 3, H, W).
-            bev_seg_map: Semantic conditioning, shaped (B, 3, H, W).
-            bev_velocity_map: Velocity conditioning, shaped (B, 3, H, W).
-            point_mask: Binary radar target mask, shaped (B, 1, H, W).
-            rcs_target: Physical RCS targets, shaped (B, 1, H, W).
-            doppler_target: Physical Doppler targets, shaped (B, 1, H, W).
-            data_info: Optional spatial and sample metadata.
-        text_provider: Callable taking batch size and device and returning
-            empty-text embeddings and their attention mask, expanded for
-            the three output modality streams.
-        ppp_loss: PPP likelihood loss callable.
-        config: Configuration containing image size, encoder downsampling
-            factor, conditioning dropout, and loss settings.
-        accelerator: Accelerator managing device placement and mixed
-            precision through its autocast context.
-
-    Local variables:
-        conditions: Encoded appearance, semantics, and velocity latents.
-        batch_size: Number B of examples in this microbatch.
-        latent_size: Latent spatial size L, equal to image size divided
-            by the encoder downsampling factor.
-        dropout: Probability of zeroing each conditioning modality.
-            Each decision applies to the entire microbatch, independently
-            across the three modalities; defaults to 0.1.
-        y: Empty-text embeddings required by the DiT interface.
-        mask: Text attention mask, distinct from the radar point_mask.
-        decoded: Raw predictions shaped (B, 3, 1, H, W), ordered as
-            density, RCS, and Doppler. The loss helper applies the
-            prescribed output transformations.
-
-    Returns:
-        The result of compute_ppp_losses(), containing the combined
-        training loss and its component losses.
+    DinoPPP consumes three (B,3,H,W) maps directly and returns (B,3,H,W).
+    Targets only enter the losses. Condition dropout independently zeros each
+    complete conditioning batch, preserving the existing training policy.
+    The encoder/text arguments are used only by older latent-model configs.
     """
     import random
     with accelerator.autocast():
-        conditions = condition_encoder([batch[k] for k in
-                                        ('bev_color_map', 'bev_seg_map', 'bev_velocity_map')])
-        batch_size = batch['point_mask'].shape[0]
-        latent_size = config.model.image_size // config.vae.vae_downsample_rate
-        if any(c.shape != (batch_size, 32, latent_size, latent_size) for c in conditions):
-            raise ValueError('Unexpected scaled condition latent shapes')
-        # Baseline independently drops each complete conditioning batch at p=0.1.
+        direct = config.model.model == 'DinoPPP'
+        conditions = [batch[k] for k in ('bev_color_map', 'bev_seg_map', 'bev_velocity_map')]
+        if not direct:
+            conditions = condition_encoder(conditions)
         dropout = config.train.extra.get('conditioning_dropout', 0.1)
         conditions = [c * 0.0 if random.random() < dropout else c for c in conditions]
-        y, mask = text_provider(batch_size, accelerator.device)
-        decoded = model(conditions, y, mask=mask, data_info=batch.get('data_info'))
+        if direct:
+            decoded = model(*conditions)
+        else:
+            y, mask = text_provider(batch['point_mask'].shape[0], accelerator.device)
+            decoded = model(conditions, y, mask=mask, data_info=batch.get('data_info'))
     return compute_ppp_losses(decoded, batch, ppp_loss, config.train.extra)
 
 
@@ -178,8 +151,8 @@ def assert_optimizer_membership(model, encoder, optimizer):
     intended = {id(p) for p in model.parameters() if p.requires_grad}
     actual = [id(p) for group in optimizer.param_groups for p in group['params']]
     if len(actual) != len(set(actual)) or set(actual) != intended:
-        raise ValueError('PPP optimizer must contain each trainable DiT/decoder parameter exactly once')
-    if set(actual) & {id(p) for p in encoder.parameters()}:
+        raise ValueError('PPP optimizer must contain each trainable model parameter exactly once')
+    if encoder is not None and set(actual) & {id(p) for p in encoder.parameters()}:
         raise ValueError('Frozen conditioning encoder must not be optimized')
 
 
@@ -223,13 +196,13 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     from accelerate.data_loader import prepare_data_loader
     from accelerate.utils import InitProcessGroupKwargs, set_seed
     from diffusion.data.wids.wids import DistributedRangedSampler
-    from diffusion.utils.optimizer import build_optimizer, auto_scale_lr
     from diffusion.utils.lr_scheduler import build_lr_scheduler
     from radargen.losses.ppp_loss import PPPLoss
-    from radargen.training.ppp_initialization import initialize_ppp_model
+    from radargen.training.ppp_initialization import initialize_ppp_model, initialize_dino_ppp_model
     from radargen.training.ppp_checkpoint import (save_ppp_checkpoint, load_ppp_checkpoint,
                                                 capture_rng_state, restore_rng_state)
     config = copy.deepcopy(config)
+    direct = config.model.model == 'DinoPPP'
     if config.train.auto_lr and config.train.auto_lr.get('rule') == 'none':
         config.train.auto_lr = {}
     sweep = config.train.extra.get('lr_range_test', False)
@@ -260,9 +233,10 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                 cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES", "unset"))
     if options.smoke_check and accelerator.num_processes != 1:
         raise ValueError('The minimal checkpoint mutation smoke check requires one GPU/process')
-    if sweep and (accelerator.num_processes != 4 or config.train.train_batch_size != 5 or
+    # Preserve the original latent sweep setup; DINO uses its configured batch and GPU count.
+    if sweep and not direct and (accelerator.num_processes != 4 or config.train.train_batch_size != 5 or
                   config.train.gradient_accumulation_steps != 1):
-        raise ValueError('LR range run requires four processes, batch size 5 per GPU and accumulation 1')
+        raise ValueError('Latent LR range run requires four processes, batch size 5 per GPU and accumulation 1')
     if components is None and accelerator.device.type != 'cuda':
         raise ValueError('Pretrained PPP training requires an allocated GPU; use --validate-only on login nodes')
     if options.max_updates is not None and options.max_updates <= 0:
@@ -293,17 +267,25 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     startup_log("dataset construction end", validated_pairs=len(dataset))
     startup_log("model loading begin", injected=components is not None)
     if components is None:
-        components = initialize_ppp_model(fresh_config, null_embed_path=options.null_embed_path,
-                                          device=accelerator.device)
-    model, encoder = components.model.to(accelerator.device), components.condition_encoder.to(accelerator.device)
+        if direct:
+            components = initialize_dino_ppp_model(fresh_config, device=accelerator.device,
+                                                   load_pretrained=not (resume or init_from))
+        else:
+            components = initialize_ppp_model(fresh_config, null_embed_path=options.null_embed_path,
+                                              device=accelerator.device)
+    model = components.model.to(accelerator.device)
+    encoder = components.condition_encoder
+    if encoder is not None:
+        encoder = encoder.to(accelerator.device).eval()
     if init_from:
         load_ppp_checkpoint(init_from, model, resume_optimizer=False, resume_lr_scheduler=False)
         logger.info('Initialized PPP model weights from %s; optimizer, scheduler and progress start fresh', init_from)
-    encoder.eval()
     freeze_decoder = config.train.extra.get("freeze_decoder", False)
     if not isinstance(freeze_decoder, bool):
         raise ValueError("train.extra.freeze_decoder must be boolean")
     if freeze_decoder:
+        if direct:
+            raise ValueError('DinoPPP trains its spatial prediction head')
         model.ppp_decoder.requires_grad_(False)
         logger.info("PPP decoder frozen; gradients through decoder to DiT remain enabled")
     startup_log("model loading end")
@@ -328,10 +310,18 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                 batches=len(loader), workers=config.train.num_workers)
     lr_scale_ratio = 1
     if config.train.auto_lr:
+        from diffusion.utils.optimizer import auto_scale_lr
         lr_scale_ratio = auto_scale_lr(config.train.train_batch_size * accelerator.num_processes *
                                       config.train.gradient_accumulation_steps,
                                       config.train.optimizer, **config.train.auto_lr)
-    optimizer = build_optimizer(model, copy.deepcopy(config.train.optimizer))
+    if direct:
+        # Standard PyTorch optimizer over only the stem, LoRA and prediction path.
+        optimizer_kwargs = copy.deepcopy(config.train.optimizer)
+        optimizer_class = getattr(torch.optim, optimizer_kwargs.pop('type'))
+        optimizer = optimizer_class((p for p in model.parameters() if p.requires_grad), **optimizer_kwargs)
+    else:
+        from diffusion.utils.optimizer import build_optimizer
+        optimizer = build_optimizer(model, copy.deepcopy(config.train.optimizer))
     if freeze_decoder:
         optimizer.param_groups[:] = [group for group in optimizer.param_groups
                                      if any(p.requires_grad for p in group["params"])]
@@ -347,12 +337,14 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     checkpoint_data.pop('ppp_manifest_path', None)
     contract = dict(world_size=accelerator.num_processes, dataset_size=len(dataset),
                     batch_size=config.train.train_batch_size, accumulation=config.train.gradient_accumulation_steps,
-                    data=checkpoint_data, model=asdict(fresh_config.model), vae=asdict(config.vae),
-                    text_encoder=asdict(config.text_encoder), optimizer=config.train.optimizer,
+                    data=checkpoint_data, model=asdict(fresh_config.model), optimizer=config.train.optimizer,
                     lr_schedule=config.train.lr_schedule, lr_args=config.train.lr_schedule_args,
-                    loss={k: v for k, v in config.train.extra.items() if k != 'keep_last_checkpoints'}, seed=config.train.seed, gradient_clip=config.train.gradient_clip,
-                    null_embed_path=str(Path(options.null_embed_path).resolve()),
-                    text_model_dir=str(Path(options.text_model_dir).resolve()))
+                    loss={k: v for k, v in config.train.extra.items() if k != 'keep_last_checkpoints'},
+                    seed=config.train.seed, gradient_clip=config.train.gradient_clip)
+    if not direct:
+        contract.update(vae=asdict(config.vae), text_encoder=asdict(config.text_encoder),
+                        null_embed_path=str(Path(options.null_embed_path).resolve()),
+                        text_model_dir=str(Path(options.text_model_dir).resolve()))
     if manifest_identity is not None:
         contract['manifest_identity'] = manifest_identity
     progress = dict(epoch=0, batch_in_epoch=0, global_step=0)
@@ -366,11 +358,12 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                 or progress['batch_in_epoch'] > len(loader)):
             raise ValueError('Invalid PPP checkpoint training position')
     startup_log("optimizer/scheduler/resume end")
-    startup_log("Gemma loading begin", injected=text_provider is not None)
-    if text_provider is None:
-        text_provider = load_local_text_provider(config, accelerator.device, options.text_model_dir)
+    if not direct:
+        startup_log("Gemma loading begin", injected=text_provider is not None)
+        if text_provider is None:
+            text_provider = load_local_text_provider(config, accelerator.device, options.text_model_dir)
+        startup_log("Gemma loading end")
     # Baseline preparation order; already rank-partitioned sampler must not be sharded again.
-    startup_log("Gemma loading end")
     startup_log("DDP model preparation begin")
     model = accelerator.prepare(model)
     startup_log("DDP model preparation end")
@@ -392,12 +385,19 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     original = None
     if options.smoke_check:
         bare = accelerator.unwrap_model(model)
-        original = (next(bare.dit.parameters()).detach().clone(),
-                    bare.ppp_decoder.decoder.project_out.op_list[-1].conv.weight.detach().clone())
+        if direct:
+            trainable = [p for p in bare.parameters() if p.requires_grad]
+            smoke_parameters = (trainable[0], trainable[-1])
+        else:
+            smoke_parameters = (next(bare.dit.parameters()),
+                                bare.ppp_decoder.decoder.project_out.op_list[-1].conv.weight)
+        original = [p.detach().clone() for p in smoke_parameters]
     started, last_saved = time.monotonic(), None
     updates_this_run = 0
     first_microbatch = True
     vram_microbatch = 0
+    log_gpu_memory = direct and accelerator.is_main_process and accelerator.device.type == 'cuda'
+    measured_step = None
 
     def save():
         nonlocal last_saved
@@ -473,10 +473,16 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
             if first_microbatch:
                 startup_log("first batch received")
                 startup_log("first forward begin")
+            if log_gpu_memory and measured_step != progress['global_step']:
+                # Include all accumulated microbatches and the optimizer update.
+                # Reset here so prediction images between updates do not affect
+                # the next training step's peak memory measurement.
+                torch.cuda.reset_peak_memory_stats(accelerator.device)
+                measured_step = progress['global_step']
             # Measure microbatches 10–12 once per launch, after optimizer warm-up.
             vram_microbatch += 1
             measure_vram = (accelerator.is_main_process and accelerator.device.type == 'cuda'
-                            and 10 <= vram_microbatch <= 12)
+                            and not direct and 10 <= vram_microbatch <= 12)
             bare = accelerator.unwrap_model(model)
             bare.measure_vram = measure_vram
             if measure_vram:
@@ -546,6 +552,14 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                 values = {key: accelerator.reduce(value.float(), reduction='mean').item() for key,value in logs.items()}
                 values.update(grad_norm=accelerator.reduce(grad_norm.float(), reduction='mean').item(),
                               lr=used_lr)
+                if log_gpu_memory:
+                    gib = 1024 ** 3
+                    values.update(
+                        gpu_allocated_gib=torch.cuda.memory_allocated(accelerator.device) / gib,
+                        gpu_reserved_gib=torch.cuda.memory_reserved(accelerator.device) / gib,
+                        gpu_peak_allocated_gib=torch.cuda.max_memory_allocated(accelerator.device) / gib,
+                        gpu_peak_reserved_gib=torch.cuda.max_memory_reserved(accelerator.device) / gib,
+                    )
                 if first_update:
                     startup_log("first metric collectives end", global_step=progress["global_step"])
                 if (progress['global_step'] % config.train.log_interval == 0 or updates_this_run == 1) and accelerator.is_main_process:
@@ -586,13 +600,14 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     predict()
     if options.smoke_check:
         bare = accelerator.unwrap_model(model)
-        parameters = (next(bare.dit.parameters()),bare.ppp_decoder.decoder.project_out.op_list[-1].conv.weight)
+        parameters = smoke_parameters
         for before, after in zip(original, parameters):
             if torch.equal(before,after):
-                raise AssertionError('Smoke check: intended DiT/decoder parameter did not update')
-        assert all(not p.requires_grad and p.grad is None for p in encoder.parameters())
-        assert not encoder.training and not encoder.encoder.training
-        assert all(p.dtype==torch.float32 for p in bare.ppp_decoder.parameters())
+                raise AssertionError('Smoke check: intended model parameter did not update')
+        if not direct:
+            assert all(not p.requires_grad and p.grad is None for p in encoder.parameters())
+            assert not encoder.training and not encoder.encoder.training
+            assert all(p.dtype==torch.float32 for p in bare.ppp_decoder.parameters())
         if not last_saved:
             save()
         saved_parameters = [p.detach().clone() for p in parameters]
@@ -613,7 +628,11 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
             assert saved.keys() == restored.keys()
             for key, value in saved.items():
                 if isinstance(value, torch.Tensor):
-                    torch.testing.assert_close(value, restored[key], rtol=0, atol=0)
+                    # Accelerate can put Adam's scalar step counter on CUDA;
+                    # checkpoint loading may keep it on CPU. Its value must
+                    # still match exactly, as must the devices of moment tensors.
+                    torch.testing.assert_close(value, restored[key], rtol=0, atol=0,
+                                               check_device=not (key == 'step' and value.ndim == 0))
                 else:
                     assert value == restored[key]
         logger.info('PPP smoke parameter updates and checkpoint restoration passed')
@@ -627,7 +646,7 @@ def main() -> int:
     parser.add_argument('--max-updates', type=int, help='Stop after this many optimizer updates in this invocation')
     parser.add_argument('--smoke-check', action='store_true', help='Verify updates and checkpoint mutation/restoration (one GPU)')
     parser.add_argument('--init-from', help='Load PPP model weights only; start fresh optimizer, scheduler and progress')
-    parser.add_argument('--resume', help='Local PPP checkpoint or latest; fresh SANA loading is separate')
+    parser.add_argument('--resume', help='Resume a matching PPP training checkpoint or latest')
     parser.add_argument('--null-embed-path', default='output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth')
     parser.add_argument('--text-model-dir', default='/e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it')
     options, config_args = parser.parse_known_args()

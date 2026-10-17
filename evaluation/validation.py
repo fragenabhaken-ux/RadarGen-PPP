@@ -154,8 +154,8 @@ class PPPPredictor:
         self.seed = config['seed']
         self.pipeline = RadarGenPPPPipeline.from_config(
             model_config, checkpoint_path=config['checkpoint_path'],
-            sana_checkpoint_path=config['sana_checkpoint_path'],
-            null_embed_path=config['null_embed_path'], text_model_dir=config['text_model_dir'],
+            sana_checkpoint_path=config.get('sana_checkpoint_path'),
+            null_embed_path=config.get('null_embed_path'), text_model_dir=config.get('text_model_dir'),
             device=device, seed=config['seed'])
 
     def seed_sample(self, index):

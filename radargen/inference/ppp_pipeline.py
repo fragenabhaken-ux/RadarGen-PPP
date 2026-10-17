@@ -11,11 +11,14 @@ CONDITION_KEYS = ('bev_color_map', 'bev_seg_map', 'bev_velocity_map')
 
 
 class RadarGenPPPPipeline:
-    def __init__(self, model, condition_encoder, text_provider, *, resolution=512,
+    def __init__(self, model, condition_encoder=None, text_provider=None, *, resolution=512,
                  coordinate_range=50.0, device='cuda', mixed_precision='bf16', seed=42):
         self.device = torch.device(device)
         self.model = model.to(self.device).eval()
-        self.condition_encoder = condition_encoder.to(self.device).eval()
+        self.condition_encoder = (condition_encoder.to(self.device).eval()
+                                  if condition_encoder is not None else None)
+        if self.condition_encoder is not None and text_provider is None:
+            raise ValueError('The latent PPP model requires a text provider')
         self.text_provider = text_provider
         self.resolution = resolution
         self.coordinate_range = coordinate_range
@@ -25,14 +28,10 @@ class RadarGenPPPPipeline:
         self.generator = torch.Generator(device='cpu').manual_seed(seed)
 
     @classmethod
-    def from_config(cls, config, *, checkpoint_path=None, sana_checkpoint_path,
-                    null_embed_path, text_model_dir, device='cuda', seed=42):
-        from radargen.training.ppp_initialization import initialize_ppp_model
+    def from_config(cls, config, *, checkpoint_path=None, sana_checkpoint_path=None,
+                    null_embed_path=None, text_model_dir=None, device='cuda', seed=42):
         from radargen.training.ppp_checkpoint import load_ppp_checkpoint
-        from scripts.train_ppp import load_local_text_provider
 
-        # The inference config points at the trained wrapper; the fresh-model
-        # initializer must receive the ORIGINAL SANA checkpoint separately.
         trained = checkpoint_path or config.model.load_from
         if not trained or not Path(trained).is_file():
             raise ValueError(f'Trained local PPP checkpoint unavailable: {trained}')
@@ -40,18 +39,36 @@ class RadarGenPPPPipeline:
         fresh.resume_from = None
         fresh.model.resume_from = None
         fresh.load_from = None
-        fresh.model.load_from = str(sana_checkpoint_path)
         fresh.train.grad_checkpointing = False
-        components = initialize_ppp_model(fresh, null_embed_path=null_embed_path,
-                                         checkpoint_path=sana_checkpoint_path, device=device)
-        keys = components.model.state_dict()
-        if not all(any(k.startswith(prefix) for k in keys) for prefix in ('dit.', 'ppp_decoder.')):
-            raise ValueError('PPP wrapper must contain both DiT and decoder')
+        if config.model.model == 'DinoPPP':
+            from radargen.training.ppp_initialization import initialize_dino_ppp_model
+
+            fresh.model.load_from = None
+            # The trained PPP checkpoint contains the complete backbone. Loading
+            # its original DINO checkpoint again would add an unnecessary asset.
+            components = initialize_dino_ppp_model(fresh, device=device, load_pretrained=False)
+            text = None
+        else:
+            from radargen.training.ppp_initialization import initialize_ppp_model
+            from scripts.train_ppp import load_local_text_provider
+
+            if any(value is None for value in (sana_checkpoint_path, null_embed_path, text_model_dir)):
+                raise ValueError('Latent PPP inference requires SANA, null embedding, and text model paths')
+            # The latent wrapper initializer needs the original SANA checkpoint,
+            # while the inference config points at the trained PPP wrapper.
+            fresh.model.load_from = str(sana_checkpoint_path)
+            components = initialize_ppp_model(fresh, null_embed_path=null_embed_path,
+                                             checkpoint_path=sana_checkpoint_path, device=device)
+            keys = components.model.state_dict()
+            if not all(any(k.startswith(prefix) for k in keys) for prefix in ('dit.', 'ppp_decoder.')):
+                raise ValueError('PPP wrapper must contain both DiT and decoder')
+            text = None
         # Existing loader checks all wrapper keys and tensor shapes strictly.
         # No optimizer/scheduler is constructed or restored for inference.
         load_ppp_checkpoint(trained, components.model,
                             resume_optimizer=False, resume_lr_scheduler=False)
-        text = load_local_text_provider(config, torch.device(device), text_model_dir)
+        if components.condition_encoder is not None:
+            text = load_local_text_provider(config, torch.device(device), text_model_dir)
         return cls(components.model, components.condition_encoder, text,
                    resolution=config.model.image_size,
                    coordinate_range=config.data.extra['coordinate_range'],
@@ -70,7 +87,8 @@ class RadarGenPPPPipeline:
                 raise ValueError('Nonfinite conditioning tensor')
             maps.append(value.to(self.device, dtype=torch.float32))
         self.model.eval()
-        self.condition_encoder.eval()
+        if self.condition_encoder is not None:
+            self.condition_encoder.eval()
         if data_info is None:
             data_info = dict(img_hw=torch.tensor([[self.resolution, self.resolution]], device=self.device),
                              aspect_ratio=torch.ones(1, device=self.device))
@@ -80,9 +98,15 @@ class RadarGenPPPPipeline:
         context = (torch.autocast('cuda', dtype={'bf16': torch.bfloat16, 'fp16': torch.float16}[self.mixed_precision])
                    if self.device.type == 'cuda' and self.mixed_precision in ('bf16', 'fp16') else nullcontext())
         with context:
-            latents = self.condition_encoder(maps)  # no condition dropout
-            y, mask = self.text_provider(1, self.device)
-            output = self.model(latents, y, mask=mask, data_info=data_info)
+            if self.condition_encoder is None:
+                output = self.model(*maps)
+                if tuple(output.shape) != (1, 3, self.resolution, self.resolution):
+                    raise ValueError('Unexpected direct PPP output shape')
+                output = output.unsqueeze(2)
+            else:
+                latents = self.condition_encoder(maps)  # no condition dropout
+                y, mask = self.text_provider(1, self.device)
+                output = self.model(latents, y, mask=mask, data_info=data_info)
         if tuple(output.shape) != (1, 3, 1, self.resolution, self.resolution):
             raise ValueError('Unexpected decoded PPP output shape')
         if not torch.isfinite(output).all():

@@ -168,10 +168,11 @@ class TrainingConfig(BaseConfig):
 class SanaConfig(BaseConfig):
     data: DataConfig
     model: ModelConfig
-    vae: AEConfig
-    text_encoder: TextEncoderConfig
-    scheduler: SchedulerConfig
-    train: TrainingConfig
+    # Direct predictors omit the diffusion/autoencoder sections in YAML.
+    vae: AEConfig = field(default_factory=AEConfig)
+    text_encoder: TextEncoderConfig = field(default_factory=TextEncoderConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    train: TrainingConfig = field(default_factory=TrainingConfig)
     work_dir: str = "output/"
     resume_from: Optional[str] = None
     load_from: Optional[str] = None

@@ -90,7 +90,8 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
     rows = []
     try:
         model.eval()
-        if encoder.training or any(p.requires_grad or p.grad is not None for p in encoder.parameters()):
+        if encoder is not None and (encoder.training or any(
+                p.requires_grad or p.grad is not None for p in encoder.parameters())):
             raise ValueError('Condition encoder must remain frozen and in eval mode')
         with torch.no_grad():
             for index in (range(len(dataset)) if indices is None else indices):
@@ -107,11 +108,16 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                     continue
                 batch = send_to_device(default_collate([sample]), accelerator.device)
                 with accelerator.autocast():
-                    conditions = encoder([batch[k] for k in ('bev_color_map','bev_seg_map','bev_velocity_map')])
-                    y, text_mask = text_provider(1, accelerator.device)
-                    decoded = model(conditions, y, mask=text_mask, data_info=batch['data_info'])
+                    conditions = [batch[k] for k in ('bev_color_map','bev_seg_map','bev_velocity_map')]
+                    if config.model.model == 'DinoPPP':
+                        decoded = model(*conditions)
+                    else:
+                        conditions = encoder(conditions)
+                        y, text_mask = text_provider(1, accelerator.device)
+                        decoded = model(conditions, y, mask=text_mask, data_info=batch['data_info'])
                 _, losses = compute_ppp_losses(decoded, batch, ppp_loss, config.train.extra)
-                fields = decoded[0,:,0].float().cpu().numpy()
+                fields = decoded[0] if decoded.ndim == 4 else decoded[0, :, 0]
+                fields = fields.float().cpu().numpy()
                 mask = sample['point_mask'][0].numpy().astype(bool)
                 rcs, doppler = (sample[k][0].numpy() for k in ('rcs_target','doppler_target'))
                 stats, mass, marks = summarize_fields(fields, mask, rcs, doppler, bounds)

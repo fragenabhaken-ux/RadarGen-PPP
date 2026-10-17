@@ -30,8 +30,8 @@ class RadarGenPPPWrapper(ModelWrapper):
             raise ValueError('PPP/evaluator dataset mismatch')
         self.pipeline = RadarGenPPPPipeline.from_config(self.config,
             checkpoint_path=config.checkpoint_path,
-            sana_checkpoint_path=params['sana_checkpoint_path'],
-            null_embed_path=params['null_embed_path'], text_model_dir=params['text_model_dir'],
+            sana_checkpoint_path=params.get('sana_checkpoint_path'),
+            null_embed_path=params.get('null_embed_path'), text_model_dir=params.get('text_model_dir'),
             device=config.device, seed=params.get('seed', 42))
         self._dataset = None
         self._scene = None
