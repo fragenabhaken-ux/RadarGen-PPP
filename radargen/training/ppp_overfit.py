@@ -60,7 +60,7 @@ def summarize_fields(fields, point_mask, rcs_target, doppler_target, bounds):
     return result, mass, marks
 
 
-def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, accelerator, step, *, indices=None, lr=None):
+def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, accelerator, step, *, indices=None, lr=None, writer=None):
     import h5py
     import torch
     from torch.utils.data import default_collate
@@ -327,6 +327,12 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                     dpi=110,
                     bbox_inches='tight',
                 )
+                if writer is not None:
+                    from radargen.training.tensorboard_logging import log_scalars
+                    prefix = 'overfit' if indices is None else 'prediction'
+                    log_scalars(writer, f'{prefix}/sample_{index}', row, step)
+                    writer.add_figure(f'{prefix}/sample_{index}', fig, step, close=False)
+                    writer.flush()
                 plt.close(fig)
 
         with (directory/'metrics.jsonl').open('a') as stream:

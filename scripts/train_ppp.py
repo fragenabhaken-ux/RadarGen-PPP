@@ -86,6 +86,7 @@ def validate_ppp_config(config: SanaConfig) -> None:
     require(config.train.num_workers >= 0, "train.num_workers must be nonnegative")
     require(not config.train.use_fsdp, "PPP initially supports the DDP configuration only")
     require(bool(config.work_dir), "root-level work_dir is required")
+    require(type(config.tensorboard) is bool, "tensorboard must be true or false")
     require(positive(config.train.gradient_clip), "train.gradient_clip must be positive and finite")
     for key in ("log_interval", "save_model_steps"):
         require(getattr(config.train, key) > 0, f"train.{key} must be positive")
@@ -181,6 +182,13 @@ def load_local_text_provider(config, device, model_directory):
 
 def run_training(config, options, *, components=None, dataset=None, text_provider=None):
     """Actual PPP loop; injection is reserved for explicitly labeled CPU tests."""
+    from contextlib import ExitStack
+    with ExitStack() as output_stack:
+        return _run_training(config, options, components=components, dataset=dataset,
+                             text_provider=text_provider, output_stack=output_stack)
+
+
+def _run_training(config, options, *, components, dataset, text_provider, output_stack):
     from radargen.training.startup_logging import startup_log
     startup_log("runtime imports begin")
     import copy
@@ -378,6 +386,10 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
     startup_log("optimizer/scheduler/loader preparation end")
     if accelerator.is_main_process and config.report_to != 'none':
         accelerator.init_trackers(config.tracker_project_name)
+    from radargen.training.tensorboard_logging import tensorboard_writer, log_scalars
+    writer = output_stack.enter_context(tensorboard_writer(
+        config.work_dir, config.tensorboard and accelerator.is_main_process,
+        purge_step=progress['global_step'] + 1 if resume else None))
     ppp_loss = PPPLoss(out_img_size=(512,512),
                        normalize_by_gt_count=config.train.extra['normalize_ppp_by_gt_count']).to(accelerator.device)
     model.train()
@@ -426,7 +438,7 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
         if diagnostic_interval:
             from radargen.training.ppp_overfit import diagnose_overfit
             diagnose_overfit(accelerator.unwrap_model(model), encoder, dataset,
-                text_provider, ppp_loss, config, accelerator, progress['global_step'])
+                text_provider, ppp_loss, config, accelerator, progress['global_step'], writer=writer)
 
     def predict():
         nonlocal last_prediction
@@ -442,7 +454,7 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                         indices = [random.Random(config.train.seed + progress['global_step']).randrange(len(dataset))]
                     diagnose_overfit(accelerator.unwrap_model(model), encoder, dataset,
                         text_provider, ppp_loss, config, accelerator, progress['global_step'],
-                        indices=indices, lr=last_used_lr)
+                        indices=indices, lr=last_used_lr, writer=writer)
                 except Exception as exc:
                     error = f'{type(exc).__name__}: {exc}'
                     logger.exception('PPP prediction output failed')
@@ -494,8 +506,8 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                 if progress['global_step'] < warmup_updates:
                     # Count optimizer updates, independent of GPU count/accumulation.
                     warmup_factor = (progress['global_step'] + 1) / warmup_updates
-                    epoch_factor = (1.0 if epoch < config.train.lr_schedule_args['switch_epoch']
-                                    else config.train.lr_schedule_args['factor'])
+                    from diffusion.utils.lr_scheduler import epoch_step_factor
+                    epoch_factor = epoch_step_factor(config.train.lr_schedule_args, epoch)
                     for group, base_lr in zip(optimizer.param_groups, scheduler.base_lrs):
                         group['lr'] = base_lr * epoch_factor * warmup_factor
             with accelerator.accumulate(model):
@@ -566,6 +578,9 @@ def run_training(config, options, *, components=None, dataset=None, text_provide
                     logger.info('%s PPP update %d: %s',
                                 datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds'),
                                 progress['global_step'], values)
+                    log_scalars(writer, 'train', values, progress['global_step'])
+                    if writer is not None:
+                        writer.flush()
                     if config.report_to != 'none':
                         accelerator.log(values, step=progress['global_step'])
                 if options.max_updates is not None and updates_this_run >= options.max_updates:

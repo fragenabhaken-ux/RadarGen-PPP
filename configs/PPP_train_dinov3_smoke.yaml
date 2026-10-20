@@ -2,7 +2,7 @@
 # The smoke launcher supplies --max-updates and --smoke-check.
 data:
   dataset_dir: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
-  ppp_data_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples
+  ppp_data_dir: /e/scratch/nxtaim-1/public/truckscenes/RadarGen_preprocessed
   ppp_manifest_path: output/ppp_manifests/truckscenes_train.json
   image_size: 512
   load_text_feat: false

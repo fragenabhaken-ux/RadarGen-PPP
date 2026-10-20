@@ -14,3 +14,6 @@ checkpoint_path: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2289081_PPP
 sana_checkpoint_path: /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
 null_embed_path: output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth
 output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/PPP_validation
+
+# Also write metrics and figures to <run directory>/tensorboard.
+tensorboard: false

@@ -11,7 +11,7 @@ models:
     device: cuda
     params:
       seed: 42
-      ppp_data_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples
+      ppp_data_dir: /e/scratch/nxtaim-1/public/truckscenes/RadarGen_preprocessed
       sana_checkpoint_path: /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
       null_embed_path: output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth
       text_model_dir: /e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it

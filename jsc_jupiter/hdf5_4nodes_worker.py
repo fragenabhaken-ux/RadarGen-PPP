@@ -16,7 +16,7 @@ import yaml
 REPO = Path("/e/project1/nxtaim-1/huber7/repos/RadarGen")
 WORK = Path("/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen")
 BASE = REPO / "jsc_jupiter"
-OUTPUT = WORK / "preprocessing/full/hdf5_samples"
+OUTPUT = Path("/e/scratch/nxtaim-1/public/truckscenes/RadarGen_preprocessed")
 sys.path.insert(0, str(REPO))
 
 
@@ -125,7 +125,7 @@ def process_scenes():
                           camera_views=cfg.get("camera_views"))
 
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    attempts = OUTPUT.parent / "hdf5_attempts"
+    attempts = WORK / "preprocessing/full/hdf5_attempts"
     attempts.mkdir(parents=True, exist_ok=True)
     assigned = scenes[rank::workers]
     failed = []

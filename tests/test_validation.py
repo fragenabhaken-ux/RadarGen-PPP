@@ -46,8 +46,13 @@ class ToyPredictor:
     def __init__(self, model):
         self.model = model
         self.calls = 0
+        self.total_calls = 0
+
+    def seed_sample(self, index):
+        self.calls = index
 
     def predict(self, sample, conditions):
+        self.total_calls += 1
         self.calls += 1
         points = np.array([[0., 0., 1., -1.], [2., 2., 2., 2.]])
         if self.calls == 2:
@@ -152,9 +157,11 @@ class ValidationChecks(unittest.TestCase):
                 predictor = ToyPredictor(model)
                 config = dict(model=model, seed=42, checkpoint_path='toy.pth', plot_dpi=30)
                 provenance = dict(config, sample_count=2, selected_indices=[1, 0])
-                with patch('radargen.training.radargen_ppp_dataset.validate_ppp_metadata'):
+                with patch('radargen.training.radargen_ppp_dataset.validate_ppp_metadata'), patch(
+                        'evaluation.validation.time.perf_counter', side_effect=[10., 10.25, 20., 20.75]):
                     rows = evaluate_samples(dataset, predictor, config, torch.device('cpu'), output, provenance)
                 self.assertEqual(predictor.calls, 2)
+                self.assertEqual(predictor.total_calls, 3)
                 self.assertEqual(len(rows), 2)
                 self.assertEqual([row["frame"] for row in rows], [1, 0])
                 self.assertEqual(rows[1]['status'], 'empty_cloud')
@@ -167,10 +174,20 @@ class ValidationChecks(unittest.TestCase):
                 self.assertEqual(len((output / 'metrics.txt').read_text().splitlines()), 3)
                 summary = json.loads((output / 'summary.json').read_text())
                 self.assertTrue(summary['complete'])
+                timings = [row['metrics']['inference_time_seconds'] for row in rows]
+                self.assertEqual(timings, [0.25, 0.75])
+                self.assertEqual(summary['metrics']['inference_time_seconds']['mean'], 0.5)
+                self.assertEqual(summary['metrics']['inference_time_seconds']['std'], 0.25)
+                self.assertEqual(summary['metrics']['inference_time_seconds']['median'], float(np.median(timings)))
                 self.assertEqual(summary['empty_generated_samples'], 1)
                 self.assertEqual(summary['metrics']['chamfer_distance_xy']['valid_samples'], 1)
                 if model == 'ppp':
                     self.assertAlmostEqual(rows[1]['metrics']['ppp_expected_total_count'], 2.)
+                for row in rows:
+                    # Mark maps remain evaluable when point-cloud recovery is empty.
+                    self.assertEqual(row['metrics']['rcs_mae_at_target_cells'], 0. if model == 'ppp' else 1.)
+                    self.assertEqual(row['metrics']['doppler_mae_at_target_cells'], 0. if model == 'ppp' else 3.)
+                self.assertEqual(summary['metrics']['rcs_mae_at_target_cells']['valid_samples'], 2)
                 # Resume a completed run without regenerating either sample.
                 restarted = ToyPredictor(model)
                 with patch('radargen.training.radargen_ppp_dataset.validate_ppp_metadata'):

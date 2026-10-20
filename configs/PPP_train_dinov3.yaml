@@ -1,8 +1,9 @@
 # Direct prediction: three RGB BEV conditions -> log-intensity, raw RCS, raw Doppler.
-# Uses the existing HDF5 data and PPP losses; no VAE, DiT or text encoder.
+# 65 epochs: LR 1e-3 for epochs 1–40, then 1e-4 for epochs 41–65.
+# First 200 optimizer updates warm up linearly to 1e-3; batch 216/GPU on four GPUs.
 data:
   dataset_dir: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
-  ppp_data_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples
+  ppp_data_dir: /e/scratch/nxtaim-1/public/truckscenes/RadarGen_preprocessed
   ppp_manifest_path: output/ppp_manifests/truckscenes_train.json
   image_size: 512
   load_text_feat: false
@@ -45,23 +46,23 @@ model:
     local_refine_blocks: 2
 
 train:
-  num_workers: 10
+  num_workers: 4
   seed: 42
-  train_batch_size: 5
-  num_epochs: 6
-  gradient_accumulation_steps: 2
+  train_batch_size: 216
+  num_epochs: 65
+  gradient_accumulation_steps: 1
   grad_checkpointing: true
   gradient_clip: 1.0
   optimizer:
     type: AdamW
-    lr: 1.0e-4
+    lr: 1.0e-3
     betas: [0.9, 0.999]
     eps: 1.0e-8
     weight_decay: 0.01
   lr_schedule: epoch_step
   lr_schedule_args:
-    switch_epoch: 4
-    factor: 0.5
+    switch_epoch: 40
+    factor: 0.1
     num_warmup_steps: 200
   auto_lr:
     rule: none
@@ -76,10 +77,11 @@ train:
     doppler_weight: 1.0
     normalize_ppp_by_gt_count: true
     velocity_loss_mode: signed_l1
-    conditioning_dropout: 0.1
+    conditioning_dropout: 0.0
     overfit_diagnostic_interval: 0
-    keep_last_checkpoints: 3
-    prediction_interval: 100
+    lr_range_test: false
+    keep_last_checkpoints: 5  # Retain only the latest five numbered checkpoints.
+    prediction_interval: 1000
     prediction_random_sample: true
 
 work_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/PPP_train_dinov3
@@ -87,3 +89,6 @@ name: PPP_train_dinov3
 tracker_project_name: train_radargen_ppp
 report_to: none
 resume_from: null
+
+# Also write metrics and figures to <run directory>/tensorboard.
+tensorboard: false

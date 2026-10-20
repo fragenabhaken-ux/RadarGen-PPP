@@ -12,3 +12,6 @@ model_config: configs/RadarGen_validation_inference.yaml
 checkpoint_path: /e/project1/nxtaim-1/huber7/pretrained/RadarGen_600M_512px_TS/RadarGen_600M_512px_TS.safetensors
 num_inference_steps: 20
 output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/RadarGen_validation
+
+# Also write metrics and figures to <run directory>/tensorboard.
+tensorboard: false

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import time
 from pathlib import Path
 
 import numpy as np
@@ -262,6 +263,11 @@ def write_reports(directory, rows, provenance, device='cpu'):
         values = [row['metrics'][key] for row in rows if row['metrics'].get(key) is not None]
         summary['metrics'][key] = dict(mean=float(np.mean(values)) if values else None,
             std=float(np.std(values)) if values else None, valid_samples=len(values))
+    if 'inference_time_seconds' in summary['metrics']:
+        timings = [row['metrics']['inference_time_seconds'] for row in rows
+                   if row['metrics'].get('inference_time_seconds') is not None]
+        summary['metrics']['inference_time_seconds']['median'] = (
+            float(np.median(timings)) if timings else None)
     foreground_keys = sorted({k for row in rows for k in row.get('foreground', {})})
     summary['foreground'] = {}
     for key in foreground_keys:
@@ -299,8 +305,16 @@ def write_reports(directory, rows, provenance, device='cpu'):
 
 
 def evaluate_samples(dataset, predictor, config, device, directory, provenance, *, resume=False):
+    from radargen.training.tensorboard_logging import tensorboard_writer
+    with tensorboard_writer(directory, config.get('tensorboard', False)) as writer:
+        return _evaluate_samples(dataset, predictor, config, device, directory, provenance,
+                                 resume=resume, writer=writer)
+
+
+def _evaluate_samples(dataset, predictor, config, device, directory, provenance, *, resume, writer):
     import h5py
     import torch
+    from radargen.training.tensorboard_logging import log_scalars
     from evaluation.metrics import MMDLoss, RBF
     from evaluation.ppp_metrics import compute_ppp_count_metrics, make_ppp_grid_xy
     from radargen.training.radargen_ppp_dataset import validate_ppp_metadata
@@ -322,6 +336,7 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
                     or row['source'] != str(path) or not (directory / row['plot']).is_file()):
                 raise ValueError('Saved records or plots do not match the selected inventory')
     write_reports(directory, rows, provenance, device)
+    warmed_up = False
     try:
         with records.open('a' if resume else 'x') as stream, torch.inference_mode():
             for index in range(len(rows), provenance['sample_count']):
@@ -340,16 +355,50 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
                     raise ValueError(f'Invalid continuous targets: {path}')
                 # PPP needs the exact training transform/rasterization; RadarGen uses raw conditioning.
                 sample = dataset[selected_indices[index]] if config['model'] == 'ppp' else None
+                # Warm up once per invocation, including a resumed partial run.
+                # Restore RNG state so warm-up does not change evaluated predictions.
+                if not warmed_up:
+                    cuda_devices = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == 'cuda' else []
+                    with torch.random.fork_rng(devices=cuda_devices):
+                        if hasattr(predictor, "seed_sample"):
+                            predictor.seed_sample(index)
+                        predictor.predict(sample, conditions)
+                        if device.type == 'cuda':
+                            torch.cuda.synchronize(device)
+                    warmed_up = True
                 if hasattr(predictor, "seed_sample"):
                     predictor.seed_sample(index)
+                if device.type == 'cuda':
+                    torch.cuda.synchronize(device)
+                inference_start = time.perf_counter()
                 points, fields = predictor.predict(sample, conditions)
+                if device.type == 'cuda':
+                    torch.cuda.synchronize(device)
+                inference_seconds = time.perf_counter() - inference_start
                 if points.ndim != 2 or points.shape[1] != 4 or not np.isfinite(points).all():
                     raise ValueError(f'Invalid predicted point cloud: {path}')
                 from radargen.core.normalization import NormalizationConfig
                 metrics = sample_metrics(points, gt, NormalizationConfig(**dataset.normalization), mmd, device)
+                metrics['inference_time_seconds'] = inference_seconds
                 boxes = validation_boxes(dataset, expected)
                 foreground, foreground_points = foreground_metrics(
                     points, gt, boxes, NormalizationConfig(**dataset.normalization), device, include_points=True)
+                # Use the same occupied-cell targets and physical marking units for both models.
+                if config['model'] == 'ppp':
+                    mask = sample['point_mask'][0].numpy().astype(bool)
+                    targets = [sample[name + '_target'][0].numpy() for name in ('rcs', 'doppler')]
+                    mark_maps = [fields[name] for name in ('rcs', 'doppler')]
+                else:
+                    from radargen.ppp_targets import create_ppp_targets_from_detections
+                    mask, rcs_target, doppler_target, _ = create_ppp_targets_from_detections(
+                        gt[:, :2], gt[:, 2], gt[:, 3], image_size=dataset.resolution,
+                        point_limit=dataset.point_limit)
+                    mask = mask.astype(bool)
+                    targets = [rcs_target, doppler_target]
+                    mark_maps = fields[1:]
+                for name, prediction, target in zip(('rcs', 'doppler'), mark_maps, targets):
+                    metrics[name + '_mae_at_target_cells'] = (
+                        float(np.abs(prediction[mask] - target[mask]).mean()) if mask.any() else None)
                 scene, frame = expected['scene_token'], int(expected['frame_index'])
                 plot = f'plots/{scene}/sample_{frame:06d}.png'
                 title = f"{config['model']} validation: {scene}, frame {frame}; GT={len(gt)}, generated={len(points)}"
@@ -358,10 +407,6 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
                     analytic = compute_ppp_count_metrics(mass, gt, boxes, make_ppp_grid_xy(*mass.shape, dataset.point_limit))
                     metrics.update({k: v for k, v in analytic.items() if not isinstance(v, list)})
                     foreground.update({k: v for k, v in analytic.items() if isinstance(v, list)})
-                    mask = sample['point_mask'][0].numpy().astype(bool)
-                    for name in ('rcs', 'doppler'):
-                        values = sample[name + '_target'][0].numpy()
-                        metrics[name + '_mae_at_target_cells'] = float(np.abs(fields[name][mask] - values[mask]).mean()) if mask.any() else None
                     fig = plot_ppp_prediction(sample, fields, points, dataset.point_limit, title, gamma=config.get('plot_gamma', 0.2))
                 else:
                     fig = plot_radargen_prediction(gt_maps, fields, points, coordinate_range=dataset.point_limit, title=title)
@@ -386,6 +431,8 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     fig.savefig(destination, dpi=config.get('plot_dpi', 110), bbox_inches='tight')
+                    if writer is not None:
+                        writer.add_figure('validation/prediction', fig, index, close=False)
                 finally:
                     fig.clear()
                 status = 'ok' if len(gt) and len(points) else 'empty_cloud'
@@ -396,11 +443,17 @@ def evaluate_samples(dataset, predictor, config, device, directory, provenance, 
                 stream.write(json.dumps(row, allow_nan=False) + '\n')
                 stream.flush()
                 rows.append(row)
+                log_scalars(writer, 'validation/sample', metrics, index)
+                if writer is not None:
+                    writer.flush()
                 if len(rows) % 100 == 0:
                     write_reports(directory, rows, provenance, device)
                 LOG.info('Validated %d/%d: %s frame %d', index + 1, provenance['sample_count'], scene, frame)
     finally:
         write_reports(directory, rows, provenance, device)
+        if writer is not None:
+            summary = json.loads((directory / 'summary.json').read_text())
+            log_scalars(writer, 'validation/summary', summary, len(rows))
     return rows
 
 
@@ -446,7 +499,7 @@ def run_validation(config, output_dir=None, max_samples=None, *, resume=False):
         raise ValueError(f'Output directory must be empty to prevent mixing runs: {directory}')
     model_config.work_dir = str(directory)
     model_config.train.work_dir = str(directory)
-    provenance = dict(config, split='val', validation_version=3, keyframes_only=True,
+    provenance = dict(config, split='val', validation_version=5, keyframes_only=True,
         foreground_classes=['car', 'truck', 'trailer'], sample_count=count, available_samples=len(dataset),
         selected_indices=selected_indices, selection_seed=config.get('selection_seed', 42),
         config_sha256={key: hashlib.sha256(Path(config[key]).read_bytes()).hexdigest()

@@ -798,8 +798,7 @@ scenes using \texttt{hdf5\_4nodes\_runner.py}.
 
 The expected output comprises 93,035 HDF5 samples stored under:
 \begin{verbatim}
-/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/
-    preprocessing/full/hdf5_samples/<scene_token>/
+/e/scratch/nxtaim-1/public/truckscenes/RadarGen_preprocessed/<scene_token>/
 \end{verbatim}
 Each scene directory contains consecutively numbered
 \texttt{sample\_XXXXXX.h5} files and a \texttt{\_SUCCESS.json} marker.
@@ -983,7 +982,7 @@ Before connecting training, test real retained detections and synthetic points w
 \paragraph{Paths and sample identity.}
 The production root is
 \begin{lstlisting}
-/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples/
+/e/scratch/nxtaim-1/public/truckscenes/RadarGen_preprocessed/
 \end{lstlisting}
 and the smoke root is
 \begin{lstlisting}
@@ -1222,7 +1221,7 @@ item reader through an explicitly labeled diagnostic probe.
 
 A subsequent check used a temporary configuration pointing to:
 \begin{lstlisting}
-/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples
+/e/scratch/nxtaim-1/public/truckscenes/RadarGen_preprocessed
 \end{lstlisting}
 The scene selection and processing-signature pin were preserved.
 The actual training dataset accepted scene

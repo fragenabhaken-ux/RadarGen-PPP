@@ -1,5 +1,21 @@
 # Reusable PPP validated manifests
 
+## Shared dataset location (20 October 2026)
+
+The production HDF5 root is now
+`/e/scratch/nxtaim-1/public/truckscenes/RadarGen_preprocessed`.
+Training, inference, evaluation, and production preprocessing configurations use
+this location. The previous private path is retained as a filesystem symlink.
+The dataset format and loading examples are documented in `README.md` at the
+shared root. Smoke preprocessing retains its separate private output directory.
+
+Existing manifests bind the old resolved root and must be rebuilt with the
+updated configuration before manifest-backed training. Use the preparation
+commands below with `--rebuild`; do not edit manifest JSON or checksums manually.
+Rebuilding changes manifest identity, so exact resume from a checkpoint bound to
+the previous identity will fail its compatibility check. Preserve the previous
+manifest/checkpoint pair if needed for provenance.
+
 ## Implemented workflow
 
 Job 2205122 confirms that every rank repeated full adapter enumeration and HDF5 inventory validation. The available `.out` reaches 6,596 completed pairs at approximately 9.5 minutes of validation, then continues to 7,954 per rank. It contains no completed-inventory marker, so these numbers do not establish the full split size.

@@ -178,6 +178,7 @@ class SanaConfig(BaseConfig):
     load_from: Optional[str] = None
     debug: bool = False
     caching: bool = False
+    tensorboard: bool = False
     report_to: str = "wandb"
     tracker_project_name: str = "t2i-evit-baseline"
     name: str = "baseline"

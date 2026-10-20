@@ -23,6 +23,23 @@ from torch.optim.lr_scheduler import LambdaLR, ExponentialLR
 from diffusion.utils.logger import get_root_logger
 
 
+def epoch_step_factor(args, epoch):
+    """Return the multiplier relative to base LR for a zero-based epoch."""
+    milestones = args.get("switch_epochs", [args.get("switch_epoch")])
+    factors = args.get("factors", [args.get("factor")])
+    if (not isinstance(milestones, (list, tuple)) or not milestones
+            or not isinstance(factors, (list, tuple)) or len(milestones) != len(factors)
+            or any(type(e) is not int or e < 1 for e in milestones)
+            or any(a >= b for a, b in zip(milestones, milestones[1:]))
+            or any(not isinstance(f, (int, float)) or not math.isfinite(f) or f <= 0 for f in factors)):
+        raise ValueError("epoch_step requires increasing positive switch epochs and positive finite factors")
+    result = 1.0
+    for milestone, factor in zip(milestones, factors):
+        if epoch >= milestone:
+            result = factor
+    return result
+
+
 def build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio):
     if not config.get("lr_schedule_args", None):
         config.lr_schedule_args = dict()
@@ -39,12 +56,9 @@ def build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio):
         warmup = config.lr_schedule_args.get('num_warmup_steps', 0)
         if type(warmup) is not int or warmup < 0:
             raise ValueError('epoch_step num_warmup_steps must be a nonnegative integer')
-        switch_epoch = config.lr_schedule_args['switch_epoch']
-        factor = config.lr_schedule_args['factor']
-        if type(switch_epoch) is not int or switch_epoch < 1 or not math.isfinite(factor) or factor <= 0:
-            raise ValueError('epoch_step requires a positive integer switch_epoch and positive finite factor')
-        # Stepped once per completed epoch by the PPP trainer, never per update.
-        lr_scheduler = LambdaLR(optimizer, lambda epoch: 1.0 if epoch < switch_epoch else factor)
+        epoch_step_factor(config.lr_schedule_args, 0)  # Validate before training.
+        # Stepped once per completed epoch; factors are relative to the base LR.
+        lr_scheduler = LambdaLR(optimizer, lambda epoch: epoch_step_factor(config.lr_schedule_args, epoch))
     elif config.lr_schedule == "exponential":
         end_lr = config.lr_schedule_args['end_lr']
         updates = config.lr_schedule_args['updates']

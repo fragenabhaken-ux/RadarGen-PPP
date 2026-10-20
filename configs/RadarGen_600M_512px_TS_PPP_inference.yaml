@@ -1,7 +1,7 @@
 # WP6 inference; use scripts/check_ppp_inference.py. Training settings retained for model construction.
 data:
   dataset_dir: "/e/scratch/nxtaim-1/public/truckscenes/man-truckscenes"  # Where the TruckScenes dataset lives
-  ppp_data_dir: "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/preprocessing/full/hdf5_samples"
+  ppp_data_dir: "/e/scratch/nxtaim-1/public/truckscenes/RadarGen_preprocessed"
   image_size: 512
   load_text_feat: false
   load_vae_feat: false
