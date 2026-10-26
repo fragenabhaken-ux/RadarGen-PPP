@@ -5,16 +5,18 @@
 \usepackage{enumitem}
 \title{Camera2Radar: Implementation Notes}
 \author{RadarGen Master Thesis Project}
-\date{26 October 2026}
+\date{27 October 2026}
 \begin{document}
 \maketitle
 
 \section{Objective and starting point}
 Implement a direct Camera2Radar model for MAN TruckScenes. Four camera images provide the model input; the model predicts radar information in bird's-eye view (BEV). Reuse the continuous marked Poisson point process (PPP) loss and evaluation conventions of the current PPP adaptations.
 
-The conceptual starting point is the camera-domain PPP model in the companion repository \texttt{mmsegmentation\_ppp}, particularly
-\begin{quote}\small\path{configs/ppp_finals_TrafoEnc_CamDom/ppp_finals_TrafoEnc_CamDom_24k.py}\end{quote}
-That model used a single forward-facing camera/radar pair on a proprietary dataset. Its transfer to four cameras and six radar sensors requires architecture and positional-encoding work. The referenced implementation and its TruckScenes transforms still need detailed inspection before selecting the final design.
+The architectural starting point is the direct polar-BEV PPP model in the companion repository \texttt{mmsegmentation\_ppp}:
+\begin{quote}\small\path{configs/ppp_finals_TrafoEnc_BEVpolDom/ppp_finals_TrafoEnc_BEVpolDom_20k.py}\end{quote}
+Its head is \texttt{PPPPolarViTPatchRearrangeHead}, implemented in
+\begin{quote}\small\path{mmseg/models/decode_heads/ppp_finals_vit_patch_rearrange_head_polarBEV.py}\end{quote}
+That model uses one forward-facing camera/radar pair and learns direct polar-BEV prediction without an explicit calibrated image-to-BEV projection. Camera2Radar extends this principle to four cameras and six radars, using a Cartesian target domain. The previously referenced camera-domain configuration predicts depth marks on an image grid and is not the direct-BEV architectural reference.
 
 \section{Camera inputs}
 Individual camera frames are available under
@@ -28,7 +30,7 @@ The four configured views, in repository order, are:
 \end{enumerate}
 Checked files are individual three-channel, 8-bit JPEG images with native dimensions $1980\times943$ pixels (width $\times$ height). Filenames contain the camera name and timestamp. The existing \texttt{TruckScenesAdapter.load\_camera\_images} returns RGB NumPy arrays in $(H,W,3)$ layout.
 
-Feed all four views into a shared DINOv3 encoder. Eliminate the learned preprocessing that produces depth, segmentation, optical flow, and the three BEV conditioning modalities. Image decoding, resizing, normalization, and appropriate training augmentation remain necessary. Input resolution and augmentation policy are not yet decided. The intended batch layout is $(B,4,3,H,W)$.
+Feed all four views into a shared DINOv3 encoder. Eliminate the learned preprocessing that produces depth, segmentation, optical flow, and the three BEV conditioning modalities. Preserve the full camera images used as input to RadarGen preprocessing: no cropping and no flipping. Image decoding and checkpoint-appropriate normalization remain necessary. Any patch-alignment padding must preserve all image content and be reflected in calibration and validity handling; its exact implementation remains to be decided. Avoiding cropping is a project requirement, not a limitation of DINOv3. The intended batch layout is $(B,4,3,H,W)$.
 
 \section{Continuous radar supervision}
 For the agreed continuous PPP loss, the training target is a variable-length float32 array
@@ -50,30 +52,54 @@ These image targets are \emph{not} the supervision required by our continuous lo
 
 Comparable evaluation also requires identical scene splits, frame selection, coordinate conventions, detection filtering, BEV extent, and metric settings. In particular, the existing conditioning pipeline excludes final scene frames because optical flow requires a subsequent frame. Although Camera2Radar does not require this pair, retain the established evaluation frame selection for comparisons.
 
-\section{Proposed pipeline and compatibility boundaries}
+\section{Agreed implementation plan: six components}
+\textit{Updated 27 October 2026. These are design decisions; implementation and validation remain outstanding.}
 \begin{enumerate}
-\item Load synchronized camera records and their four JPEG images using dataset metadata.
-\item Load and filter radar detections directly from PCD files, producing continuous targets.
-\item Collate camera tensors and pack variable-length detections using the current PPP conventions.
-\item Extract features with a shared DINOv3 encoder.
-\item Fuse camera features with a multi-camera positional representation.
-\item Decode BEV intensity, RCS, and Doppler using the PPP architecture, adapted where necessary.
-\item Apply the existing continuous loss and evaluation interfaces.
+\item \textbf{Exact raw-data sample inventory.}
+Reuse the existing training inventory in \path{output/ppp_manifests/truckscenes_train.json}, inspected to contain 83,554 samples. It records the exact camera and radar sample-data tokens and timestamps, including non-keyframe observations. Load JPEGs and PCDs by these identities, not by re-enumerating keyframes or independently selecting nearest timestamps. Preserve all existing target filtering, units, continuous detections, and empty-frame policies. Compare regenerated detections against the corresponding HDF5 targets during verification; HDF5 need not be accessed by the final raw-data training loader.
+
+Preserve the existing validation inventory and the fixed 50-frame benchmark. For example, \path{evaluation/configs/PPP_validation_finetune_cont_2516862.yaml} specifies 50 annotated reference-sensor keyframes with selection seed 42. \path{evaluation/validation.py} applies \texttt{select\_keyframe\_indices} followed by scene-balanced selection. Preserve and verify the actual selected sensor/sample identities, not merely the seed against a differently ordered inventory. The definitive persisted list/provenance should be located and reused or exported from the established inventory before implementation. Training includes non-keyframes; this particular validation benchmark selects annotated keyframes.
+
+\item \textbf{Full camera inputs matching RadarGen preprocessing.}
+Use the same four full RGB frames loaded by \texttt{TruckScenesAdapter.load\_camera\_images}; checked native dimensions are $1980\times943$ pixels. No cropping or flipping. DINOv3 input normalization remains necessary. Define patch-size alignment without discarding image content, for example by padding with appropriate validity handling. Full-resolution token count and attention memory must be measured before launching training; any later resolution change requires an explicit design revision.
+
+\item \textbf{Shared DINOv3 backbone and token collection.}
+Collate images as $(B,4,3,H,W)$, flatten batch/view axes for shared independent encoding, then restore camera grouping. Concatenate the four patch-token sequences into $(B,4P,D)$ in a fixed camera order. Preserve patch coordinates, image transforms, timestamps, intrinsics, and extrinsics alongside the tokens. DINOv3's internal positional encoding stays intact. Concatenation collects tokens; joint attention performs fusion.
+
+\item \textbf{Geometry-aware RayRoPE transformer neck.}
+Use joint attention across all four cameras, initially retaining the 12-block neck structure. Replace its image-grid RoPE attention with the selected RayRoPE formulation. Each block predicts depth and uncertainty from its current features and applies its own geometry-dependent attention transforms; follow the reference formulation, including value/output transforms where specified, rather than treating RayRoPE as a Q/K-only coordinate substitution. Start with 384 feature channels and four heads as detailed below.
+
+Use camera intrinsics and reference-to-camera matrices in a shared frame consistent with radar supervision. Compose camera-to-reference and reference-to-vehicle-flat-up transforms, then invert for RayRoPE's \texttt{w2cs} convention. Verify transform direction and projection numerically.
+
+Keep translations and depth in metres. Adapt the released constants: \texttt{MAX\_LOG\_DEPTH=3} currently limits predicted endpoints to approximately 20.1 coordinate units; \texttt{MAX\_DEPTH=100} is a separate construction clamp; default depth-coordinate encoding also clips at \texttt{MAX\_D\_F=10}. Make these settings configurable and adjust rotary periods consistently. Base our depth bound on the supervised $\pm50$ m square, whose horizontal corner radius is approximately 70.7 m from the BEV origin, accounting for camera offsets/orientation and the selected height extent. The exact camera-depth bound is not yet measured. Accurate depth beyond the supervised region is not an objective; saturated far-scene tokens still participate in attention. Cross-camera projection safeguards must remain even for in-region points.
+
+\item \textbf{Implicitly learned Cartesian BEV head.}
+Follow the verified MMSegmentation polar head's principle: convolutional refinement, learned channel projection, channel-to-space rearrangement, learned compression, adaptive pooling to the requested grid, and final refinement/output projection. Its configured spatial sequence is $34\times112 \rightarrow272\times896 \rightarrow272\times448 \rightarrow256\times256$. There is no calibrated image-to-BEV projection in that head; the trainable network learns the spatial mapping through radar supervision. Pooling fixes dimensions, not geometry.
+
+Adapt this approach to the existing $512\times512$ Cartesian PPP output domain with intensity, RCS, and Doppler fields and the current continuous-loss semantics. No polar representation, explicit BEV queries, or explicit depth-based feature splatting is required by this design. RayRoPE's internal depth estimation serves attention and is separate from an explicit projection in the head. The consistent arrangement of the four jointly attended camera-token grids into the head's spatial input, as well as its factors/strides, remains to be designed. Do not treat arbitrary camera adjacency in that arrangement as physical BEV adjacency.
+
+\item \textbf{Training and evaluation compatibility.}
+Introduce an explicit raw-camera mode and dedicated configuration while preserving all current RadarGen and PPP modes. Reuse continuous PPP loss, mark links, count semantics, point sampling/recovery, and existing RadarGen metric implementations. Preserve checkpoint/resume, encoder freezing/fine-tuning, mixed precision, distributed training, validation, overfit diagnostics, logging, and visualizations. Adapt input-specific panels and assumptions about three conditioning maps. Retain sample metadata and bind checkpoints to the architecture, calibration/input policy, and exact inventory. Initial scope is single-time multi-camera input, without temporal fusion.
 \end{enumerate}
 
-Introduce an explicit raw-camera input mode with its own configuration. Keep existing RadarGen and PPP configurations functional. Preserve the target metadata contract: detections, point limit, scene/frame identifiers, and reference-sensor token. Carry camera ordering, timestamps, intrinsics, and extrinsics so subsequent geometry-aware designs do not require a new data interface.
+\section{Remaining implementation choices}
+Choose the camera-token spatial arrangement entering the head, head factors/strides, full-image patch-alignment handling, measured metric depth/encoding bounds, and memory strategy. Pin and inspect the RayRoPE version before integration. Geometric attention and an implicitly learned Cartesian BEV head are the agreed direction; their effectiveness still requires experiments.
 
-Training infrastructure to preserve includes checkpoint saving and resume, encoder freezing/fine-tuning controls, mixed precision, distributed training, validation, overfit diagnostics, logging, and visualizations. Audit assumptions that inputs always consist of three BEV conditioning maps; adapt input-specific handling while sharing loss and evaluation logic. Checkpoint metadata must identify the architecture and input configuration.
+\section{RayRoPE neck dimensions: proposed starting configuration}
+\textit{Discussion update: 27 October 2026.}
+RayRoPE is the leading candidate for geometric rotary encoding across the four cameras; integration and empirical validation remain outstanding. Encode each image independently with shared DINOv3 weights, concatenate the patch tokens while retaining calibration and patch identities, and perform joint attention in the neck.
 
-\section{Architecture questions still open}
-\begin{itemize}
-\item How should per-camera DINOv3 features be fused into the decoder input?
-\item How should positional encoding represent image position, camera identity, and camera-to-BEV geometry?
-\item Should calibration enter explicitly through geometric positional encoding or another projection mechanism?
-\item Which thesis-model encoder/decoder components transfer directly, and which require adaptation?
-\item What image resolution, token budget, and batching strategy fit available training resources?
-\end{itemize}
-No fusion or positional-encoding design has been selected yet.
+The existing MMSegmentation neck has feature width $D=384$ and six attention heads, giving $D_{\mathrm{head}}=384/6=64$. This number is the channel dimension per neck attention head, not an image dimension or token count. It is also separate from the pretrained DINOv3 backbone's internal attention configuration. Image resolution and patch size determine the number of tokens; use the full RadarGen source images with patch-alignment handling as specified above.
+
+The inspected RayRoPE implementation requires
+\[
+D_{\mathrm{head}}\bmod(2D_{\mathrm{coords}})=0.
+\]
+For its default encoding (camera centre plus three depth-dependent patch rays), $D_{\mathrm{coords}}=3+3\cdot3=12$, so the head dimension must be divisible by 24. The existing 64-dimensional neck heads do not satisfy this constraint.
+
+Our proposed starting configuration is \textbf{384 feature channels and four neck attention heads}, yielding $D_{\mathrm{head}}=96$. This preserves the backbone output width and satisfies the default RayRoPE constraint without modifying DINOv3's internal heads. It is an initial experimental choice, not a validated optimum. Alternatives include 384 channels with eight heads (48 dimensions per head), or a learned projection to 576 channels with six heads (96 dimensions per head), at increased neck width and computational cost for the latter.
+
+Implementation reference: \url{https://github.com/Lucas-707/RayRoPE/blob/main/pos_enc/rayrope.py}. Recheck the constraint against the pinned version and selected ray configuration when integrating.
 
 \section{Implementation and verification sequence}
 \begin{enumerate}
