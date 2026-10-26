@@ -29,6 +29,7 @@ from jsc_jupiter.hdf5_samples import pair_metadata
 from radargen.datasets.truckscenes import TruckScenesAdapter
 from radargen.ppp_targets import create_ppp_targets_from_detections
 from radargen.radar_maps.creator import deduplicate_by_pixel, normalize_to_image_coords
+from radargen.training.ppp_collate import collate_ppp_samples
 from radargen.training.radargen_dataset import RadarGenDataset
 from radargen.training.radargen_ppp_dataset import validate_radargen_ppp_dataset_from_config, read_ppp_sample
 
@@ -154,16 +155,13 @@ def main():
         with h5py.File(path, 'r') as handle:
             xy, rcs, doppler = (handle[f'ppp_targets/{k}'][()] for k in ('xy', 'rcs', 'doppler'))
             _, _, _, stats = create_ppp_targets_from_detections(xy, rcs, doppler, image_size=512, point_limit=50)
-        retained = stats['retained_indices']
-        rows, cols = round_trip(xy[retained], size=512, limit=50)
-        np.testing.assert_array_equal(sample['rcs_target'][0, rows, cols], rcs[retained])
-        np.testing.assert_array_equal(sample['doppler_target'][0, rows, cols], doppler[retained])
-        assert set(sample) == {'point_mask','rcs_target','doppler_target','bev_color_map','bev_seg_map','bev_velocity_map','data_info'}
+        np.testing.assert_array_equal(sample['detections'].numpy(), np.column_stack((xy, rcs, doppler)))
+        assert set(sample) == {'detections', 'point_limit', 'bev_color_map', 'bev_seg_map', 'bev_velocity_map', 'data_info'}
         for key, value in sample.items():
             if isinstance(value, torch.Tensor):
                 assert value.dtype == torch.float32 and torch.isfinite(value).all()
-                assert value.shape == ((3,512,512) if key.startswith('bev_') else (1,512,512))
-        print(f"PASS sample {scene}/{expected['frame_index']}: stored={stats['stored']} rounded={stats['after_rounded']} final_collisions={stats['final_cell_collisions']} active={stats['active_cells']}; physical marks exact")
+                assert value.shape == ((3, 512, 512) if key.startswith('bev_') else (len(rcs), 4))
+        print(f"PASS sample {scene}/{expected['frame_index']}: all {len(rcs)} detections and physical marks retained")
         try:
             legacy = baseline._load_bev_maps(scene, expected['frame_index'])
         except FileNotFoundError as error:
@@ -174,8 +172,8 @@ def main():
                 torch.testing.assert_close(sample[key], other, rtol=1e-6, atol=1e-6)
                 print(f'PASS conditioning {expected["frame_index"]}/{key}: max_abs_diff={(sample[key]-other).abs().max().item()}')
     dataset = Subset(completed, [0,50,100]) if completed is not None else probe
-    reference = list(DataLoader(dataset, batch_size=2, num_workers=0))
-    multi = DataLoader(dataset, batch_size=2, num_workers=2, persistent_workers=True, multiprocessing_context='spawn')
+    reference = list(DataLoader(dataset, batch_size=2, num_workers=0, collate_fn=collate_ppp_samples))
+    multi = DataLoader(dataset, batch_size=2, num_workers=2, persistent_workers=True, multiprocessing_context='spawn', collate_fn=collate_ppp_samples)
     for epoch in range(2):
         actual = list(multi)
         assert len(actual) == len(reference) == 2

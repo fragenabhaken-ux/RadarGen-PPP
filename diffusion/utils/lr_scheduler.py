@@ -59,6 +59,13 @@ def build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio):
         epoch_step_factor(config.lr_schedule_args, 0)  # Validate before training.
         # Stepped once per completed epoch; factors are relative to the base LR.
         lr_scheduler = LambdaLR(optimizer, lambda epoch: epoch_step_factor(config.lr_schedule_args, epoch))
+    elif config.lr_schedule == "cosine_updates":
+        # PPP uses an already rank-partitioned loader. Count actual optimizer
+        # updates, independent of world size and gradient accumulation.
+        updates_per_epoch = math.ceil(len(train_dataloader) / config.gradient_accumulation_steps)
+        lr_scheduler = get_cosine_updates_schedule(
+            optimizer, updates_per_epoch * config.num_epochs,
+            **config.lr_schedule_args)
     elif config.lr_schedule == "exponential":
         end_lr = config.lr_schedule_args['end_lr']
         updates = config.lr_schedule_args['updates']
@@ -134,3 +141,27 @@ def get_cosine_decay_to_constant_with_warmup(
         )
 
     return LambdaLR(optimizer, lr_lambda, last_epoch)
+
+
+def get_cosine_updates_schedule(optimizer, num_training_steps, num_warmup_steps=200,
+                                min_lr_ratio=0.05, decay_start_fraction=0.0,
+                                decay_end_fraction=1.0):
+    """Linear warmup, optional peak hold, and one cosine to a relative LR floor."""
+    if (type(num_training_steps) is not int or num_training_steps <= 0
+            or type(num_warmup_steps) is not int
+            or not 0 <= num_warmup_steps < num_training_steps
+            or not 0 <= min_lr_ratio <= 1
+            or not 0 <= decay_start_fraction < decay_end_fraction <= 1
+            or num_warmup_steps >= decay_end_fraction * num_training_steps):
+        raise ValueError('Invalid cosine_updates duration, warmup, floor or decay start')
+    decay_start = max(num_warmup_steps, decay_start_fraction * num_training_steps)
+    decay_end = decay_end_fraction * num_training_steps
+
+    def multiplier(update):
+        if update < num_warmup_steps:
+            return update / max(1, num_warmup_steps)
+        progress = min(1.0, max(0.0, (update - decay_start) /
+                                (decay_end - decay_start)))
+        return min_lr_ratio + (1 - min_lr_ratio) * 0.5 * (1 + math.cos(math.pi * progress))
+
+    return LambdaLR(optimizer, multiplier)

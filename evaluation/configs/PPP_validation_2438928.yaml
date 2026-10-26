@@ -1,0 +1,17 @@
+# Same 50 annotated validation keyframes for both final models (selection_seed: 42).
+dataset_config: configs/PPP_train.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+max_samples: 50
+plot_dpi: 110
+plot_gamma: 0.2
+text_model_dir: /e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it
+model: ppp
+model_config: configs/PPP_train.yaml
+checkpoint_path: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2438928_PPP_train/checkpoints/epoch_6_step_12534.pth
+sana_checkpoint_path: /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+null_embed_path: output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/PPP_validation_2438928
+
+tensorboard: false

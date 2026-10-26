@@ -195,6 +195,31 @@ class ManifestChecks(unittest.TestCase):
         self.assertEqual(len(selected), 2)  # Training applies sample Subset after loading.
         self.assertEqual({r[1]['scene_token'] for r in selected.frame_index}, {'scene_a'})
 
+    def test_relocated_roots_with_symlinks(self):
+        identity = self.prepare()
+        original = self.read_document()
+        # Simulate moving each prepared root and leaving a compatibility symlink.
+        Path(self.config.data.dataset_dir).mkdir()
+        for field in ('dataset_dir', 'ppp_data_dir'):
+            old = Path(getattr(self.config.data, field))
+            new = old.with_name(old.name + '_shared')
+            old.rename(new)
+            old.symlink_to(new, target_is_directory=True)
+            setattr(self.config.data, field, str(new))
+        with patch('h5py.File', side_effect=AssertionError('startup opened HDF5')):
+            cached = load_ppp_manifest(self.config)
+        self.assertEqual(cached.manifest_identity['sha256'], identity)
+        self.assertEqual(self.read_document(), original)
+        self.assertTrue(all(path.is_relative_to(Path(self.config.data.ppp_data_dir))
+                            for path, *_ in cached.frame_index))
+        # Retargeting the old alias to different data must still fail closed.
+        old.unlink()
+        other = self.root / 'other'
+        other.mkdir()
+        old.symlink_to(other, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'contract'):
+            load_ppp_manifest(self.config)
+
     def test_malformed_and_missing_manifests(self):
         with self.assertRaisesRegex(ValueError, 'custom.yaml'):
             load_ppp_manifest(self.config, config_path='custom.yaml')

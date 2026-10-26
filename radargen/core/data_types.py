@@ -95,10 +95,16 @@ class TrainingBatch(TypedDict, total=False):
 
 
 class PPPTrainingBatch(TypedDict, total=False):
-    """PPP sample: float32 conditions (3,H,W), targets (1,H,W), physical marks.
+    """PPP sample/batch: continuous detections and float32 BEV conditions.
 
-    Default collation adds a leading batch dimension; data_info matches baseline.
+    Custom collation packs detections and stacks conditions; legacy raster
+    targets remain available explicitly. data_info matches baseline.
     """
+    # Opt-in continuous sample: (N,4) metric x/y, dBsm RCS, m/s Doppler.
+    detections: torch.Tensor
+    frame_indices: torch.Tensor
+    batch_size: int
+    point_limit: float
     point_mask: torch.Tensor
     rcs_target: torch.Tensor
     doppler_target: torch.Tensor

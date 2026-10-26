@@ -1,5 +1,5 @@
 # Direct prediction: three RGB BEV conditions -> log-intensity, raw RCS, raw Doppler.
-# 65 epochs: LR 1e-3 for epochs 1–40, then 1e-4 for epochs 41–65.
+# 65 epochs: cosine approximation of the initial run only; LR 1e-3 to 1e-4.
 # First 200 optimizer updates warm up linearly to 1e-3; batch 216/GPU on four GPUs.
 data:
   dataset_dir: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
@@ -59,11 +59,13 @@ train:
     betas: [0.9, 0.999]
     eps: 1.0e-8
     weight_decay: 0.01
-  lr_schedule: epoch_step
+  # Earlier cosine decay; final quarter stays at the minimum LR.
+  lr_schedule: cosine_updates
   lr_schedule_args:
-    switch_epoch: 40
-    factor: 0.1
     num_warmup_steps: 200
+    min_lr_ratio: 0.1
+    decay_start_fraction: 0.0
+    decay_end_fraction: 0.75
   auto_lr:
     rule: none
   log_interval: 20
@@ -90,5 +92,5 @@ tracker_project_name: train_radargen_ppp
 report_to: none
 resume_from: null
 
-# Also write metrics and figures to <run directory>/tensorboard.
-tensorboard: false
+# Write metrics and figures to <run directory>/tensorboard; no loose PNGs.
+tensorboard: true

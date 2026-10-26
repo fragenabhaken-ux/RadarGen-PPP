@@ -1,0 +1,91 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[margin=25mm]{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\title{Camera2Radar: Implementation Notes}
+\author{RadarGen Master Thesis Project}
+\date{26 October 2026}
+\begin{document}
+\maketitle
+
+\section{Objective and starting point}
+Implement a direct Camera2Radar model for MAN TruckScenes. Four camera images provide the model input; the model predicts radar information in bird's-eye view (BEV). Reuse the continuous marked Poisson point process (PPP) loss and evaluation conventions of the current PPP adaptations.
+
+The conceptual starting point is the camera-domain PPP model in the companion repository \texttt{mmsegmentation\_ppp}, particularly
+\begin{quote}\small\path{configs/ppp_finals_TrafoEnc_CamDom/ppp_finals_TrafoEnc_CamDom_24k.py}\end{quote}
+That model used a single forward-facing camera/radar pair on a proprietary dataset. Its transfer to four cameras and six radar sensors requires architecture and positional-encoding work. The referenced implementation and its TruckScenes transforms still need detailed inspection before selecting the final design.
+
+\section{Camera inputs}
+Individual camera frames are available under
+\begin{quote}\small\path{/e/scratch/nxtaim-1/public/truckscenes/man-truckscenes/samples/}\end{quote}
+The four configured views, in repository order, are:
+\begin{enumerate}[nosep]
+\item \texttt{CAMERA\_RIGHT\_FRONT}
+\item \texttt{CAMERA\_LEFT\_FRONT}
+\item \texttt{CAMERA\_RIGHT\_BACK}
+\item \texttt{CAMERA\_LEFT\_BACK}
+\end{enumerate}
+Checked files are individual three-channel, 8-bit JPEG images with native dimensions $1980\times943$ pixels (width $\times$ height). Filenames contain the camera name and timestamp. The existing \texttt{TruckScenesAdapter.load\_camera\_images} returns RGB NumPy arrays in $(H,W,3)$ layout.
+
+Feed all four views into a shared DINOv3 encoder. Eliminate the learned preprocessing that produces depth, segmentation, optical flow, and the three BEV conditioning modalities. Image decoding, resizing, normalization, and appropriate training augmentation remain necessary. Input resolution and augmentation policy are not yet decided. The intended batch layout is $(B,4,3,H,W)$.
+
+\section{Continuous radar supervision}
+For the agreed continuous PPP loss, the training target is a variable-length float32 array
+\[
+ D\in\mathbb{R}^{N\times4},\qquad D_i=(x_i,y_i,\mathrm{RCS}_i,\mathrm{Doppler}_i).
+\]
+Positions are in metres, RCS in dBsm, and Doppler in metres per second. The vehicle flat-up frame has $x$ pointing right, $y$ forward, and $z$ up. Preserve every filtered detection, including multiple detections that occupy the same BEV cell.
+
+Raw radar PCD files are available in the sensor directories under the same dataset root. Reuse the existing radar-loading implementation to fuse all six radar sensors, transform positions, and calculate signed Doppler according to the current convention. Apply the same camera-frustum filtering and strict square-range filtering as the existing target producer. Current settings use one radar sweep and $|x|<50$ m, $|y|<50$ m.
+
+The existing \texttt{create\_radar\_maps\_for\_frame} function in
+\begin{quote}\small\path{radargen/radar_maps/creator.py}\end{quote}
+exposes filtered metric detections through \texttt{radar\_callback}, before image-coordinate conversion and pixel deduplication. Existing HDF5 continuous targets were captured at this point. The raw-data path should share this filtering logic rather than introduce a second interpretation. An extraction/refactoring may be needed to obtain detections without also computing unused raster maps.
+
+\section{Relationship to RadarGen targets and metrics}
+RadarGen raster targets consist of point-density, RCS, and Doppler maps, each of shape $(512,512)$ for the current configuration. The BEV covers $100\times100$ m. Point-density construction uses Gaussian sigma 2 with the current settings. RadarGen's image-based training representation repeats each scalar map into three channels and normalizes the image representation to $[-1,1]$.
+
+These image targets are \emph{not} the supervision required by our continuous loss. Camera2Radar should preserve the existing continuous PPP output definitions (BEV intensity and mark fields), target units, loss, and prediction conventions. Evaluation should reuse the current PPP evaluation path and RadarGen metrics, including their point sampling/recovery policies. Do not assume that PPP intensity can be passed directly as a normalized RadarGen density map: retain the existing PPP conversion and count semantics.
+
+Comparable evaluation also requires identical scene splits, frame selection, coordinate conventions, detection filtering, BEV extent, and metric settings. In particular, the existing conditioning pipeline excludes final scene frames because optical flow requires a subsequent frame. Although Camera2Radar does not require this pair, retain the established evaluation frame selection for comparisons.
+
+\section{Proposed pipeline and compatibility boundaries}
+\begin{enumerate}
+\item Load synchronized camera records and their four JPEG images using dataset metadata.
+\item Load and filter radar detections directly from PCD files, producing continuous targets.
+\item Collate camera tensors and pack variable-length detections using the current PPP conventions.
+\item Extract features with a shared DINOv3 encoder.
+\item Fuse camera features with a multi-camera positional representation.
+\item Decode BEV intensity, RCS, and Doppler using the PPP architecture, adapted where necessary.
+\item Apply the existing continuous loss and evaluation interfaces.
+\end{enumerate}
+
+Introduce an explicit raw-camera input mode with its own configuration. Keep existing RadarGen and PPP configurations functional. Preserve the target metadata contract: detections, point limit, scene/frame identifiers, and reference-sensor token. Carry camera ordering, timestamps, intrinsics, and extrinsics so subsequent geometry-aware designs do not require a new data interface.
+
+Training infrastructure to preserve includes checkpoint saving and resume, encoder freezing/fine-tuning controls, mixed precision, distributed training, validation, overfit diagnostics, logging, and visualizations. Audit assumptions that inputs always consist of three BEV conditioning maps; adapt input-specific handling while sharing loss and evaluation logic. Checkpoint metadata must identify the architecture and input configuration.
+
+\section{Architecture questions still open}
+\begin{itemize}
+\item How should per-camera DINOv3 features be fused into the decoder input?
+\item How should positional encoding represent image position, camera identity, and camera-to-BEV geometry?
+\item Should calibration enter explicitly through geometric positional encoding or another projection mechanism?
+\item Which thesis-model encoder/decoder components transfer directly, and which require adaptation?
+\item What image resolution, token budget, and batching strategy fit available training resources?
+\end{itemize}
+No fusion or positional-encoding design has been selected yet.
+
+\section{Implementation and verification sequence}
+\begin{enumerate}
+\item Inspect the thesis model, its TruckScenes transforms, and the current trainer/evaluation interfaces.
+\item Implement the raw-camera and continuous-radar dataset path with consistent metadata and collation.
+\item Compare generated detections against existing HDF5 targets for matched frames, checking values, counts, units, and ordering where relevant. Extend checks across representative scenes before training.
+\item Verify a batch against the continuous-loss contract and preserve existing input modes.
+\item Implement multi-camera fusion and positional encoding after resolving the architecture questions.
+\item Run a small overfit experiment, training/resume checks, and an end-to-end evaluation smoke test.
+\end{enumerate}
+
+\section{Development depot}
+This directory stores implementation documentation and development backups. Place intentional snapshots under \texttt{backups/}, using descriptive names with dates or revision identifiers. Record the original path and reason for each backup. Avoid dataset copies, credentials, and large checkpoints. No source files have been backed up or implementation changes made as part of creating these notes.
+
+\end{document}

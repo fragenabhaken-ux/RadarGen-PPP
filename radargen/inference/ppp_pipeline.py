@@ -116,9 +116,9 @@ class RadarGenPPPPipeline:
 
     def predict_dataset_sample(self, dataset, index):
         """Use the validated HDF5 dataset's exact training transform and identity."""
-        from torch.utils.data import default_collate
+        from radargen.training.ppp_collate import collate_ppp_samples
         sample = dataset[index]
-        batch = default_collate([sample])
+        batch = collate_ppp_samples([sample])
         fields = self.predict_fields(*(batch[k] for k in CONDITION_KEYS), data_info=batch['data_info'])
         return fields, sample['data_info']
 

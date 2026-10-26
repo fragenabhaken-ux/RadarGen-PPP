@@ -23,7 +23,7 @@ export OMP_NUM_THREADS=8
 export OPENBLAS_NUM_THREADS=8
 export MKL_NUM_THREADS=8
 
-# Four-epoch training run; uses the existing full training manifest and local assets.
+# Unified six-epoch training run; uses the existing full training manifest and local assets.
 PPP_CONFIG="${1:-configs/PPP_train.yaml}"
 PPP_WORK_DIR="/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/${SLURM_JOB_ID}_${SLURM_JOB_NAME}"
 test -f "$PPP_CONFIG" || { echo "Missing configuration: $PPP_CONFIG" >&2; exit 1; }

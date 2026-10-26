@@ -67,13 +67,28 @@ def validate_ppp_metadata(handle, expected, *, resolution, point_limit, normaliz
 
 
 def read_ppp_sample(path, expected, *, resolution, point_limit, normalization, map_transform,
-                    dataset_index=None, work_dir=None):
+                    dataset_index=None, work_dir=None, continuous_targets=True):
     """Materialize one validated sample, close the file, then transform/rasterize."""
     with h5py.File(path, 'r') as handle:
         validate_ppp_metadata(handle, expected, resolution=resolution,
                               point_limit=point_limit, normalization=normalization)
         conditions = {key: handle[f'conditioning/{name}'][()] for name, key in CONDITIONS}
         xy, rcs, doppler = (handle[f'ppp_targets/{key}'][()] for key in ('xy', 'rcs', 'doppler'))
+    if continuous_targets:
+        # Keep metric coordinates and every mark aligned, including collisions.
+        if not all(np.isfinite(v).all() for v in (xy, rcs, doppler)):
+            raise ValueError(f'{path}: nonfinite continuous detections')
+        output = {key: map_transform(array) for key, array in conditions.items()}
+        for key, tensor in output.items():
+            if tensor.shape != (3, resolution, resolution) or tensor.dtype != torch.float32 or not torch.isfinite(tensor).all():
+                raise ValueError(f'{path}: invalid transformed condition {key}')
+        output.update(detections=torch.from_numpy(np.column_stack((xy, rcs, doppler))),
+                      point_limit=float(point_limit),
+                      data_info=dict(img_hw=torch.tensor([resolution, resolution], dtype=torch.float32),
+                                     aspect_ratio=torch.tensor(1.0), scene_token=expected['scene_token'],
+                                     ref_sensor_token=expected['reference_sample_data_token'],
+                                     frame_idx=expected['frame_index']))
+        return output, dict(stored=len(rcs))
     mask, rcs_grid, doppler_grid, stats = create_ppp_targets_from_detections(
         xy, rcs, doppler, image_size=resolution, point_limit=point_limit)
     affected = stats['offending_indices']
@@ -136,13 +151,13 @@ class RadarGenPPPDataset(Dataset):
 
     Initialization reads metadata/dataset headers for selected pairs, not image,
     detection, depth, or annotation arrays. Files must remain immutable afterward.
-    Empty frames are retained and produce zero target grids.
+    Empty frames are retained and produce empty detection lists by default.
     """
     load_text_feat = False
     load_vae_feat = False
 
     def __init__(self, adapter, *, ppp_data_dir, split, processing_signature,
-                 scene_tokens=None, resolution=512):
+                 scene_tokens=None, resolution=512, continuous_targets=True):
         if split not in ('train', 'val') or resolution != 512:
             raise ValueError('Initial PPP loader requires train/val split and resolution 512')
         if not isinstance(processing_signature, str) or len(processing_signature) != 64 or any(
@@ -152,6 +167,7 @@ class RadarGenPPPDataset(Dataset):
                 any(not isinstance(s, str) for s in scene_tokens) or len(set(scene_tokens)) != len(scene_tokens)):
             raise ValueError('scene_tokens must be a nonempty list of distinct scene tokens or None')
         self.adapter = adapter
+        self.continuous_targets = continuous_targets
         self.resolution = resolution
         self.point_limit = adapter.normalization.coordinate_range
         self.normalization = vars(adapter.normalization).copy()
@@ -240,7 +256,8 @@ class RadarGenPPPDataset(Dataset):
             sample, _ = read_ppp_sample(path, expected, resolution=self.resolution,
                                         point_limit=self.point_limit, normalization=self.normalization,
                                         map_transform=self.map_transform, dataset_index=index,
-                                        work_dir=getattr(self, 'work_dir', None))
+                                        work_dir=getattr(self, 'work_dir', None),
+                                        continuous_targets=getattr(self, "continuous_targets", True))
         except ValueError as error:
             raise ValueError(f'dataset_index={index} path={path} scene={expected["scene_token"]} '
                              f'frame={expected["frame_index"]}: {error}') from error
@@ -285,5 +302,6 @@ def build_radargen_ppp_dataset_from_config(config, **kwargs):
         raise ValueError('Dataset and requested resolution must agree')
     dataset = load_ppp_manifest(config, config_path=kwargs.get('config_path',
                                'configs/RadarGen_PPP_4GPU_utilization.yaml'))
+    dataset.continuous_targets = kwargs.get("continuous_targets", True)
     dataset.work_dir = config.work_dir
     return dataset

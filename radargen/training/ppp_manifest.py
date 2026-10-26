@@ -131,7 +131,15 @@ def _validate_document(document, contract):
     _require(isinstance(body, dict) and set(body) == {'contract', 'scenes', 'samples', 'sample_count', 'empty_frame_count'},
              'Malformed manifest body')
     _require(_sha(document['identity']) and document['identity'] == _digest(body), 'Manifest identity checksum mismatch')
-    _require(body['contract'] == contract and _canonical(body['contract']) == _canonical(contract),
+    # A prepared root may become a symlink after moving data to shared storage.
+    # Compare physical roots without changing the checksummed document/identity.
+    stored_contract = body['contract']
+    _require(isinstance(stored_contract, dict), 'Malformed manifest contract')
+    resolved_contract = dict(stored_contract)
+    for key in ('dataset_root', 'ppp_root'):
+        _require(_text(stored_contract.get(key)), f'Invalid manifest {key}')
+        resolved_contract[key] = str(Path(stored_contract[key]).expanduser().resolve())
+    _require(resolved_contract == contract and _canonical(resolved_contract) == _canonical(contract),
              'Manifest dataset contract differs from requested configuration')
     _require(type(body['empty_frame_count']) is int and body['empty_frame_count'] == 0,
              'Manifest must certify no empty frames')

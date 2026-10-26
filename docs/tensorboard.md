@@ -1,7 +1,9 @@
 # TensorBoard on Jupiter
 
 PPP training (including DINOv3) and shared PPP/RadarGen validation can write
-TensorBoard events alongside the existing files. File output remains enabled.
+TensorBoard events. With `tensorboard: true`, prediction/overfit/validation
+figures are written only to TensorBoard, without additional loose PNG files.
+With `tensorboard: false`, figures are saved as PNG files.
 Checkpoints and raw NPZ data retain their existing formats.
 
 Add this root-level setting to a PPP training YAML:
@@ -12,7 +14,7 @@ tensorboard: true
 
 Alternatively pass `--tensorboard true` to `scripts/train_ppp.py`. The default
 is false. This setting is independent of `report_to`; leave `report_to: none`
-if you only want the new TensorBoard output and existing files.
+to use TensorBoard without an additional tracker.
 
 For validation, add `tensorboard: true` to the evaluation YAML passed with
 `--config` (for example `evaluation/configs/PPP_validation.yaml`), rather than

@@ -1,0 +1,13 @@
+# Same 50 annotated validation keyframes for both final models (selection_seed: 42).
+dataset_config: configs/PPP_train_dinov3.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+max_samples: 50
+plot_dpi: 110
+plot_gamma: 0.2
+model: ppp
+model_config: configs/PPP_train_dinov3.yaml
+checkpoint_path: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2438929_PPP_train_dinov3/checkpoints/epoch_65_step_6305.pth
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/PPP_validation_dinov3_2438929
+tensorboard: false

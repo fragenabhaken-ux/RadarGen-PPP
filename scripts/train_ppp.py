@@ -107,13 +107,23 @@ def compute_ppp_losses(decoded, batch, ppp_loss, settings):
         decoded = decoded.unsqueeze(2)
     if decoded.ndim != 5 or decoded.shape[1:3] != (3, 1):
         raise ValueError('Decoded PPP fields must have shape (B,3,1,H,W)')
-    mask, rcs, doppler = (batch[k] for k in ('point_mask', 'rcs_target', 'doppler_target'))
-    if any(t.shape != decoded[:, 0].shape for t in (mask, rcs, doppler)):
-        raise ValueError('PPP targets must match decoded (B,1,H,W) fields')
-    raw = dict(ppp=ppp_loss(decoded[:, 0], mask),
-               rcs=masked_rcs_l1(decoded[:, 1], rcs, mask),
-               doppler=masked_doppler_loss(decoded[:, 2], doppler, mask,
-                                           settings['velocity_loss_mode']))
+    if 'detections' in batch:
+        from radargen.losses import ContinuousPPPLoss
+        if batch['batch_size'] != decoded.shape[0]:
+            raise ValueError('Packed batch size must match decoded fields')
+        if settings['velocity_loss_mode'] != 'signed_l1':
+            raise ValueError('Continuous targets currently require signed_l1')
+        raw = ContinuousPPPLoss(ppp_loss=ppp_loss)(
+            decoded[:, :, 0], batch['detections'], batch['frame_indices'],
+            point_limit=batch['point_limit'])
+    else:
+        mask, rcs, doppler = (batch[k] for k in ('point_mask', 'rcs_target', 'doppler_target'))
+        if any(t.shape != decoded[:, 0].shape for t in (mask, rcs, doppler)):
+            raise ValueError('PPP targets must match decoded (B,1,H,W) fields')
+        raw = dict(ppp=ppp_loss(decoded[:, 0], mask),
+                   rcs=masked_rcs_l1(decoded[:, 1], rcs, mask),
+                   doppler=masked_doppler_loss(decoded[:, 2], doppler, mask,
+                                               settings['velocity_loss_mode']))
     weighted = {name: value * settings[f'{name}_weight'] for name, value in raw.items()}
     total = sum(weighted.values())
     if not total.isfinite():
@@ -143,7 +153,7 @@ def training_microbatch(model, condition_encoder, batch, text_provider, ppp_loss
         if direct:
             decoded = model(*conditions)
         else:
-            y, mask = text_provider(batch['point_mask'].shape[0], accelerator.device)
+            y, mask = text_provider(conditions[0].shape[0], accelerator.device)
             decoded = model(conditions, y, mask=mask, data_info=batch.get('data_info'))
     return compute_ppp_losses(decoded, batch, ppp_loss, config.train.extra)
 
@@ -307,13 +317,22 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     diagnostic_interval = config.train.extra.get('overfit_diagnostic_interval', 0)
     if diagnostic_interval and accelerator.num_processes != 1:
         raise ValueError('WP8 overfit diagnostics currently require one GPU/process')
+    if config.train.extra.get('log_step_timing', False):
+        from radargen.training.ppp_timing import TimedDataset
+        dataset = TimedDataset(dataset)
     sampler = DistributedRangedSampler(dataset, num_replicas=accelerator.num_processes,
                                        rank=accelerator.process_index)
     if len(sampler) == 0:
         raise ValueError('Selected PPP inventory cannot supply a batch per rank')
+    from radargen.training.ppp_collate import collate_ppp_samples
+    if config.train.extra.get('log_step_timing', False):
+        from radargen.training.ppp_timing import timed_collate_ppp_samples
+        collate_ppp_samples = timed_collate_ppp_samples
     loader = DataLoader(dataset, batch_size=config.train.train_batch_size, sampler=sampler,
                         num_workers=config.train.num_workers, pin_memory=accelerator.device.type=='cuda',
-                        drop_last=False, generator=generator)
+                        persistent_workers=(config.train.num_workers > 0 and
+                                            config.train.extra.get('persistent_workers', False)),
+                        drop_last=False, generator=generator, collate_fn=collate_ppp_samples)
     startup_log("optimizer/scheduler construction begin", rank_samples=len(sampler),
                 batches=len(loader), workers=config.train.num_workers)
     lr_scale_ratio = 1
@@ -336,19 +355,22 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     assert_optimizer_membership(model, encoder, optimizer)
     # Preserve baseline warmup scaling and AcceleratedScheduler world-size stepping.
     config.train.lr_schedule_args = copy.deepcopy(config.train.lr_schedule_args)
-    if (config.train.lr_schedule != 'epoch_step'
+    if (config.train.lr_schedule not in ('epoch_step', 'cosine_updates')
             and config.train.lr_schedule_args.get('num_warmup_steps')):
         config.train.lr_schedule_args['num_warmup_steps'] *= accelerator.num_processes
     scheduler = build_lr_scheduler(config.train, optimizer, loader, lr_scale_ratio)
     checkpoint_data = asdict(config.data)
     # Manifest content identity, not its movable JSON pathname, binds resume.
     checkpoint_data.pop('ppp_manifest_path', None)
-    contract = dict(world_size=accelerator.num_processes, dataset_size=len(dataset),
+    contract = dict(target_representation='continuous_detections_v1', world_size=accelerator.num_processes, dataset_size=len(dataset),
                     batch_size=config.train.train_batch_size, accumulation=config.train.gradient_accumulation_steps,
                     data=checkpoint_data, model=asdict(fresh_config.model), optimizer=config.train.optimizer,
                     lr_schedule=config.train.lr_schedule, lr_args=config.train.lr_schedule_args,
                     loss={k: v for k, v in config.train.extra.items() if k != 'keep_last_checkpoints'},
                     seed=config.train.seed, gradient_clip=config.train.gradient_clip)
+    if config.train.lr_schedule == 'cosine_updates':
+        contract['scheduler_total_updates'] = (
+            math.ceil(len(loader) / config.train.gradient_accumulation_steps) * config.train.num_epochs)
     if not direct:
         contract.update(vae=asdict(config.vae), text_encoder=asdict(config.text_encoder),
                         null_embed_path=str(Path(options.null_embed_path).resolve()),
@@ -376,7 +398,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     model = accelerator.prepare(model)
     startup_log("DDP model preparation end")
     startup_log("optimizer/scheduler/loader preparation begin")
-    if config.train.lr_schedule in ('exponential', 'epoch_step'):
+    if config.train.lr_schedule in ('exponential', 'epoch_step', 'cosine_updates'):
         # Keep the native scheduler: AcceleratedScheduler otherwise steps once per rank.
         optimizer = accelerator.prepare(optimizer)
     else:
@@ -466,6 +488,18 @@ def _run_training(config, options, *, components, dataset, text_provider, output
 
     diagnose()
     predict()
+    log_step_timing = config.train.extra.get('log_step_timing', False)
+    timing_samples = []
+
+    def timed_batches(iterator):
+        while True:
+            begin = time.perf_counter()
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                return
+            yield batch, time.perf_counter() - begin
+
     stop = False
     for epoch in range(progress['epoch'], config.train.num_epochs):
         start_batch = progress['batch_in_epoch'] if epoch == progress['epoch'] else 0
@@ -481,7 +515,15 @@ def _run_training(config, options, *, components, dataset, text_provider, output
             restore_rng_state(resume_rng, generator)
             resume_rng = None
         batches_this_epoch = 0
-        for local_batch, batch in enumerate(iterator, start=start_batch):
+        batches = timed_batches(iterator) if log_step_timing else ((batch, None) for batch in iterator)
+        for local_batch, (batch, data_wait_s) in enumerate(batches, start=start_batch):
+            if log_step_timing:
+                if accelerator.device.type == 'cuda':
+                    torch.cuda.synchronize(accelerator.device)
+                compute_begin = time.perf_counter()
+                iteration_begin = compute_begin - data_wait_s
+                worker_load_s = batch.pop('_worker_load_s')
+                worker_collate_s = batch.pop('_worker_collate_s')
             if first_microbatch:
                 startup_log("first batch received")
                 startup_log("first forward begin")
@@ -527,13 +569,22 @@ def _run_training(config, options, *, components, dataset, text_provider, output
                     startup_log("first optimizer update begin")
                 used_lr = optimizer.param_groups[0]['lr']
                 optimizer.step()
-                if config.train.lr_schedule == 'exponential':
+                if config.train.lr_schedule in ('exponential', 'cosine_updates'):
                     if accelerator.sync_gradients and not optimizer.step_was_skipped:
                         scheduler.step()
                 elif config.train.lr_schedule != 'epoch_step':
                     scheduler.step()
                 # AcceleratedOptimizer suppresses zero_grad until the accumulation boundary.
                 optimizer.zero_grad(set_to_none=True)
+            if log_step_timing:
+                if accelerator.device.type == 'cuda':
+                    torch.cuda.synchronize(accelerator.device)
+                compute_s = time.perf_counter() - compute_begin
+                timing_samples.append((data_wait_s, compute_s))
+                logger.info(
+                    'PPP timing rank=%d microbatch=%d data_wait_s=%.4f train_s=%.4f wait_fraction=%.3f',
+                    accelerator.process_index, len(timing_samples), data_wait_s, compute_s,
+                    data_wait_s / max(data_wait_s + compute_s, 1e-12))
             if measure_vram:
                 torch.cuda.synchronize(accelerator.device)
                 stats = bare.decoder_vram
@@ -589,6 +640,31 @@ def _run_training(config, options, *, components, dataset, text_provider, output
                     stop = True
                 stop = bool(accelerator.reduce(torch.tensor(int(stop), device=accelerator.device),
                                                reduction='sum').item())
+                if log_step_timing:
+                    # End after metric/stop collectives; exclude checkpoint writes,
+                    # predictions and the timing reductions themselves.
+                    total_s = time.perf_counter() - iteration_begin
+                    local_times = torch.tensor(
+                        [data_wait_s, compute_s, total_s, worker_load_s, worker_collate_s], dtype=torch.float64,
+                        device=accelerator.device)
+                    mean_times = accelerator.reduce(local_times, reduction='mean').tolist()
+                    max_times = local_times.clone()
+                    if dist.is_initialized():
+                        dist.all_reduce(max_times, op=dist.ReduceOp.MAX)
+                    max_times = max_times.tolist()
+                    logger.info(
+                        'PPP iteration timing rank=%d update=%d data_wait_s=%.4f train_s=%.4f total_s=%.4f '
+                        'worker_load_s=%.4f worker_collate_s=%.4f',
+                        accelerator.process_index, progress['global_step'], data_wait_s, compute_s, total_s,
+                        worker_load_s, worker_collate_s)
+                    if accelerator.is_main_process:
+                        logger.info(
+                            'PPP iteration timing across_gpus=%d update=%d '
+                            'mean_data_wait_s=%.4f mean_train_s=%.4f mean_total_s=%.4f '
+                            'mean_worker_load_s=%.4f mean_worker_collate_s=%.4f '
+                            'max_data_wait_s=%.4f max_train_s=%.4f max_total_s=%.4f '
+                            'max_worker_load_s=%.4f max_worker_collate_s=%.4f',
+                            accelerator.num_processes, progress['global_step'], *mean_times, *max_times)
                 if progress['global_step'] % config.train.save_model_steps == 0 or stop:
                     save()
                 if diagnostic_interval and (progress['global_step'] % diagnostic_interval == 0 or stop):
@@ -612,6 +688,16 @@ def _run_training(config, options, *, components, dataset, text_provider, output
         if config.train.save_model_epochs and (
                 (epoch+1) % config.train.save_model_epochs == 0 or epoch+1 == config.train.num_epochs):
             save()
+    if log_step_timing and timing_samples:
+        steady = timing_samples[5:] or timing_samples
+        wait = sum(row[0] for row in steady)
+        compute = sum(row[1] for row in steady)
+        logger.info(
+            'PPP timing summary rank=%d measured=%d warmup_excluded=%d mean_data_wait_s=%.4f '
+            'mean_train_s=%.4f wait_fraction=%.3f first_batch_wait_s=%.4f',
+            accelerator.process_index, len(steady), len(timing_samples) - len(steady),
+            wait / len(steady), compute / len(steady), wait / max(wait + compute, 1e-12),
+            timing_samples[0][0])
     predict()
     if options.smoke_check:
         bare = accelerator.unwrap_model(model)

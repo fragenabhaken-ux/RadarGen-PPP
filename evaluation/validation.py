@@ -103,16 +103,15 @@ def plot_ppp_prediction(sample, fields, points, coordinate_range, title, gamma=0
 
     if not np.isfinite(gamma) or gamma <= 0:
         raise ValueError('plot_gamma must be finite and positive')
-    mask = sample['point_mask'][0].numpy().astype(bool)
-    gt = tuple(sample[key][0].numpy() for key in ('point_mask', 'rcs_target', 'doppler_target'))
+    from radargen.ppp_targets.continuous import sample_detections, display_grids
+    shape = np.asarray(fields['cell_mass_grid']).shape
+    detections = sample_detections(sample, shape, coordinate_range)
+    gt = display_grids(detections, shape, coordinate_range)
     pred = (fields['cell_mass_grid'], fields['rcs'], fields['doppler'])
     fig = plot_radargen_prediction(gt, pred, points, coordinate_range=coordinate_range, title=title)
     axes = [ax for ax in fig.axes if ax.get_title()]
-    yy, xx = np.nonzero(mask)
-    h, w = mask.shape
-    x = coordinate_range * (2 * (xx + 0.5) / w - 1)
-    y = coordinate_range * (1 - 2 * (yy + 0.5) / h)
-    for col, name in enumerate(('GT occupied cells', 'GT RCS at occupied cells', 'GT Doppler at occupied cells')):
+    x, y = detections[:, 0], detections[:, 1]
+    for col, name in enumerate(('GT detections', 'GT RCS per detection', 'GT Doppler per detection')):
         ax = axes[col]
         image = ax.images[0]
         colorbar = image.colorbar
@@ -124,7 +123,14 @@ def plot_ppp_prediction(sample, fields, points, coordinate_range, title, gamma=0
             ax.set_facecolor('black')
             ax.scatter(x, y, s=8, color='white')
         else:
-            scatter = ax.scatter(x, y, s=8, c=gt[col][mask], cmap=cmap, norm=norm)
+            if len(detections):
+                low = min(float(detections[:, col+1].min()), float(np.asarray(pred[col]).min()))
+                high = max(float(detections[:, col+1].max()), float(np.asarray(pred[col]).max()))
+                if low == high:
+                    low, high = low - 1e-6, high + 1e-6
+                norm = Normalize(vmin=low, vmax=high)
+                axes[3+col].images[0].set_norm(norm)
+            scatter = ax.scatter(x, y, s=8, c=detections[:, col+1], cmap=cmap, norm=norm)
             colorbar.update_normal(scatter)
         ax.set_title(name)
     mass = np.asarray(fields['cell_mass_grid'])
@@ -137,7 +143,7 @@ def plot_ppp_prediction(sample, fields, points, coordinate_range, title, gamma=0
     image = ax.imshow(mass ** gamma, origin='upper',
         extent=(-coordinate_range, coordinate_range, -coordinate_range, coordinate_range),
         cmap='hot', interpolation='nearest')
-    ax.scatter(x, y, s=8, color='lightskyblue', label='GT occupied cells')
+    ax.scatter(x, y, s=8, color='lightskyblue', label='GT detections')
     ax.legend(loc='upper right')
     ax.set_title(f'Predicted PPP cell mass^γ (γ={gamma})')
     ax.set_xlim(-coordinate_range, coordinate_range)
@@ -333,7 +339,9 @@ def _evaluate_samples(dataset, predictor, config, device, directory, provenance,
             path, expected, _, _ = dataset.frame_index[selected_indices[index]]
             if (row['index'] != index or row['scene'] != expected['scene_token']
                     or row['frame'] != int(expected['frame_index'])
-                    or row['source'] != str(path) or not (directory / row['plot']).is_file()):
+                    or row['source'] != str(path)
+                    or (row['plot'] and not (directory / row['plot']).is_file())
+                    or (not row['plot'] and writer is None)):
                 raise ValueError('Saved records or plots do not match the selected inventory')
     write_reports(directory, rows, provenance, device)
     warmed_up = False
@@ -353,7 +361,7 @@ def _evaluate_samples(dataset, predictor, config, device, directory, provenance,
                     gt_maps = tuple(handle[f'radargen_targets/{k}'][()] for k in ('point_density', 'rcs', 'doppler'))
                 if gt.shape[1] != 4 or not np.isfinite(gt).all() or not (np.abs(gt[:, :2]) < dataset.point_limit).all():
                     raise ValueError(f'Invalid continuous targets: {path}')
-                # PPP needs the exact training transform/rasterization; RadarGen uses raw conditioning.
+                # PPP needs the exact training transform and continuous targets; RadarGen uses raw conditioning.
                 sample = dataset[selected_indices[index]] if config['model'] == 'ppp' else None
                 # Warm up once per invocation, including a resumed partial run.
                 # Restore RNG state so warm-up does not change evaluated predictions.
@@ -383,24 +391,19 @@ def _evaluate_samples(dataset, predictor, config, device, directory, provenance,
                 boxes = validation_boxes(dataset, expected)
                 foreground, foreground_points = foreground_metrics(
                     points, gt, boxes, NormalizationConfig(**dataset.normalization), device, include_points=True)
-                # Use the same occupied-cell targets and physical marking units for both models.
-                if config['model'] == 'ppp':
-                    mask = sample['point_mask'][0].numpy().astype(bool)
-                    targets = [sample[name + '_target'][0].numpy() for name in ('rcs', 'doppler')]
-                    mark_maps = [fields[name] for name in ('rcs', 'doppler')]
-                else:
-                    from radargen.ppp_targets import create_ppp_targets_from_detections
-                    mask, rcs_target, doppler_target, _ = create_ppp_targets_from_detections(
-                        gt[:, :2], gt[:, 2], gt[:, 3], image_size=dataset.resolution,
-                        point_limit=dataset.point_limit)
-                    mask = mask.astype(bool)
-                    targets = [rcs_target, doppler_target]
-                    mark_maps = fields[1:]
-                for name, prediction, target in zip(('rcs', 'doppler'), mark_maps, targets):
-                    metrics[name + '_mae_at_target_cells'] = (
-                        float(np.abs(prediction[mask] - target[mask]).mean()) if mask.any() else None)
+                # Compare each detection with its pixel prediction, including collisions.
+                from radargen.ppp_targets.continuous import locate_detections
+                mark_maps = [fields[name] for name in ('rcs', 'doppler')] if config['model'] == 'ppp' else fields[1:]
+                valid_gt, target_rows, target_cols = locate_detections(gt, np.asarray(mark_maps[0]).shape, dataset.point_limit)
+                metrics['target_collision_count'] = int(len(valid_gt) - len(set(zip(target_rows.tolist(), target_cols.tolist()))))
+                for column, (name, prediction) in enumerate(zip(('rcs', 'doppler'), mark_maps), start=2):
+                    value = (float(np.abs(prediction[target_rows, target_cols] - valid_gt[:, column]).mean())
+                             if len(valid_gt) else None)
+                    metrics[name + '_mae_at_detections'] = value
+                    # Compatibility name; now weighted per detection, not per occupied cell.
+                    metrics[name + '_mae_at_target_cells'] = value
                 scene, frame = expected['scene_token'], int(expected['frame_index'])
-                plot = f'plots/{scene}/sample_{frame:06d}.png'
+                plot = f'plots/{scene}/sample_{frame:06d}.png' if writer is None else ''
                 title = f"{config['model']} validation: {scene}, frame {frame}; GT={len(gt)}, generated={len(points)}"
                 if config['model'] == 'ppp':
                     mass = fields['cell_mass_grid']
@@ -418,7 +421,7 @@ def _evaluate_samples(dataset, predictor, config, device, directory, provenance,
                                 -dataset.point_limit, dataset.point_limit),
                         cmap=LinearSegmentedColormap.from_list('black_red', ['black', 'red']),
                         vmin=0, interpolation='nearest')
-                    ax.scatter(gt[:, 0], gt[:, 1], s=8, color='blue', label='GT points')
+                    ax.scatter(gt[:, 0], gt[:, 1], s=5, color='lightskyblue', label='GT points')
                     ax.legend(loc='upper right')
                     ax.set_title('Predicted PD with GT points')
                     ax.set_xlim(-dataset.point_limit, dataset.point_limit)
@@ -427,11 +430,12 @@ def _evaluate_samples(dataset, predictor, config, device, directory, provenance,
                     ax.set_xlabel('x (m)')
                     ax.set_ylabel('y (m)')
                     fig.colorbar(image, ax=ax, label='PD')
-                destination = directory / plot
-                destination.parent.mkdir(parents=True, exist_ok=True)
                 try:
-                    fig.savefig(destination, dpi=config.get('plot_dpi', 110), bbox_inches='tight')
-                    if writer is not None:
+                    if writer is None:
+                        destination = directory / plot
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        fig.savefig(destination, dpi=config.get('plot_dpi', 110), bbox_inches='tight')
+                    else:
                         writer.add_figure('validation/prediction', fig, index, close=False)
                 finally:
                     fig.clear()
@@ -499,7 +503,7 @@ def run_validation(config, output_dir=None, max_samples=None, *, resume=False):
         raise ValueError(f'Output directory must be empty to prevent mixing runs: {directory}')
     model_config.work_dir = str(directory)
     model_config.train.work_dir = str(directory)
-    provenance = dict(config, split='val', validation_version=5, keyframes_only=True,
+    provenance = dict(config, split='val', validation_version=6, keyframes_only=True,
         foreground_classes=['car', 'truck', 'trailer'], sample_count=count, available_samples=len(dataset),
         selected_indices=selected_indices, selection_seed=config.get('selection_seed', 42),
         config_sha256={key: hashlib.sha256(Path(config[key]).read_bytes()).hexdigest()

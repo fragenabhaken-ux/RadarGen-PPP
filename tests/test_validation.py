@@ -37,9 +37,9 @@ class ToyDataset:
             self.frame_index.append((path, dict(scene_token='scene', frame_index=i, reference_is_key_frame=True, reference_sample_data_token=str(i)), stat.st_size, stat.st_mtime_ns))
 
     def __getitem__(self, index):
-        mask = torch.zeros(1, 8, 8)
-        mask[0, 4, 4] = 1
-        return dict(point_mask=mask, rcs_target=mask, doppler_target=-mask)
+        return dict(detections=torch.tensor([[0., 0., 1., -1.], [2., 2., 2., 2.]]),
+                    point_limit=self.point_limit)
+
 
 
 class ToyPredictor:
@@ -185,8 +185,10 @@ class ValidationChecks(unittest.TestCase):
                     self.assertAlmostEqual(rows[1]['metrics']['ppp_expected_total_count'], 2.)
                 for row in rows:
                     # Mark maps remain evaluable when point-cloud recovery is empty.
-                    self.assertEqual(row['metrics']['rcs_mae_at_target_cells'], 0. if model == 'ppp' else 1.)
-                    self.assertEqual(row['metrics']['doppler_mae_at_target_cells'], 0. if model == 'ppp' else 3.)
+                    self.assertEqual(row['metrics']['rcs_mae_at_detections'], 0.5)
+                    self.assertEqual(row['metrics']['rcs_mae_at_target_cells'], 0.5)
+                    self.assertEqual(row['metrics']['doppler_mae_at_detections'], 1.5)
+                    self.assertEqual(row['metrics']['doppler_mae_at_target_cells'], 1.5)
                 self.assertEqual(summary['metrics']['rcs_mae_at_target_cells']['valid_samples'], 2)
                 # Resume a completed run without regenerating either sample.
                 restarted = ToyPredictor(model)
@@ -203,6 +205,29 @@ class ValidationChecks(unittest.TestCase):
                 self.assertEqual(restarted.calls, 2)
                 self.assertEqual(len(restored), 2)
                 self.assertEqual(len((output / 'metrics.jsonl').read_text().splitlines()), 2)
+
+    def test_tensorboard_replaces_png_and_allows_resume(self):
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        for model in ('ppp', 'radargen'):
+            with self.subTest(model=model), TemporaryDirectory() as directory:
+                dataset = ToyDataset(directory)
+                output = Path(directory) / 'results'
+                output.mkdir()
+                config = dict(model=model, seed=42, checkpoint_path='toy.pth', tensorboard=True)
+                provenance = dict(config, sample_count=2, selected_indices=[1, 0])
+                with patch('radargen.training.radargen_ppp_dataset.validate_ppp_metadata'):
+                    rows = evaluate_samples(dataset, ToyPredictor(model), config,
+                                            torch.device('cpu'), output, provenance)
+                self.assertFalse(list(output.rglob('*.png')))
+                self.assertTrue(all(row['plot'] == '' for row in rows))
+                events = EventAccumulator(str(output / 'tensorboard')).Reload()
+                self.assertEqual([row.step for row in events.Images('validation/prediction')], [0, 1])
+                restarted = ToyPredictor(model)
+                with patch('radargen.training.radargen_ppp_dataset.validate_ppp_metadata'):
+                    restored = evaluate_samples(dataset, restarted, config, torch.device('cpu'),
+                                                output, provenance, resume=True)
+                self.assertEqual(restored, rows)
+                self.assertEqual(restarted.calls, 0)
 
     def test_failure_leaves_explicit_incomplete_reports(self):
         with TemporaryDirectory() as directory:

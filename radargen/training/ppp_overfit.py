@@ -30,32 +30,41 @@ def sample_ppp_thinning(cell_mass, rng):
     keep = rng.random(n_proposals) < (lam[yi, xi] / lam_max)
     return x[keep], y[keep], xi[keep], yi[keep]
 
-def summarize_fields(fields, point_mask, rcs_target, doppler_target, bounds):
+def summarize_fields(fields, point_mask, rcs_target, doppler_target, bounds, *, detections=None, point_limit=None):
     """Physical diagnostics on a single sample; inputs are detached NumPy arrays."""
     f = np.asarray(fields, dtype=np.float64)
     mask = np.asarray(point_mask, dtype=bool)
-    if f.shape != (3, *mask.shape) or not mask.any() or not np.isfinite(f).all():
+    if f.shape != (3, *mask.shape) or not np.isfinite(f).all():
         raise ValueError('Invalid diagnostic fields or target mask')
     with np.errstate(over='raise', invalid='raise'):
         mass = np.exp(f[0]) / mask.size
         marks = f[1:] ** 3
     if not np.isfinite(mass).all() or not np.isfinite(marks).all():
         raise ValueError('Nonfinite diagnostic predictions')
+    if detections is None:
+        rr, cc = np.nonzero(mask)
+        targets = [np.asarray(rcs_target)[mask], np.asarray(doppler_target)[mask]]
+    else:
+        from radargen.ppp_targets.continuous import locate_detections
+        points, rr, cc = locate_detections(detections, mask.shape, point_limit)
+        targets = [points[:, 2], points[:, 3]]
+    n = len(rr)
     count = float(mass.sum())
-    result = dict(expected_count=count, active_cell_count=int(mask.sum()),
+    result = dict(expected_count=count, detection_count=n, collision_count=n-int(mask.sum()),
+        count_abs_error_detections=abs(count-n), active_cell_count=int(mask.sum()),
         count_abs_error_active=abs(count-int(mask.sum())),
         log_intensity_min=float(f[0].min()), log_intensity_max=float(f[0].max()),
         cell_mass_min=float(mass.min()), cell_mass_max=float(mass.max()),
         mass_fraction_at_target_cells=float(mass[mask].sum()/count) if count > 0 else 0.)
-    for i, (name, target) in enumerate(zip(('rcs', 'doppler'), (rcs_target, doppler_target))):
+    for i, (name, target) in enumerate(zip(('rcs', 'doppler'), targets)):
         low, high = bounds[name]
         values = marks[i]
         outside = (values < low) | (values > high)
-        result.update({f'{name}_mae_at_targets': float(np.abs(values[mask]-target[mask]).mean()),
+        result.update({f'{name}_mae_at_targets': float(np.abs(values[rr, cc]-target).mean()) if n else 0.,
             f'{name}_raw_min': float(f[i+1].min()), f'{name}_raw_max': float(f[i+1].max()),
             f'{name}_physical_min': float(values.min()), f'{name}_physical_max': float(values.max()),
             f'{name}_outside_fraction_all_cells': float(outside.mean()),
-            f'{name}_outside_fraction_target_cells': float(outside[mask].mean()),
+            f'{name}_outside_fraction_target_cells': float(outside[rr, cc].mean()) if n else 0.,
             f'{name}_outside_fraction_intensity_weighted': float(mass[outside].sum()/count) if count > 0 else 0.})
     return result, mass, marks
 
@@ -63,7 +72,7 @@ def summarize_fields(fields, point_mask, rcs_target, doppler_target, bounds):
 def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, accelerator, step, *, indices=None, lr=None, writer=None):
     import h5py
     import torch
-    from torch.utils.data import default_collate
+    from radargen.training.ppp_collate import collate_ppp_samples
     from accelerate.utils import send_to_device
     from scripts.train_ppp import compute_ppp_losses
     from radargen.training.ppp_checkpoint import capture_rng_state, restore_rng_state
@@ -96,17 +105,7 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
         with torch.no_grad():
             for index in (range(len(dataset)) if indices is None else indices):
                 sample = dataset[index]
-                if not sample['point_mask'].any().item():
-                    identity = sample['data_info']
-                    skipped = dict(step=step, lr=lr, dataset_index=index,
-                        scene=identity['scene_token'], frame=int(identity['frame_idx']),
-                        reason='empty target mask; visualization skipped')
-                    log.warning('PPP visualization skipped: update=%s dataset_index=%s scene=%s frame=%s; empty target mask',
-                                step, index, skipped['scene'], skipped['frame'])
-                    with (directory/'skipped_samples.jsonl').open('a') as stream:
-                        stream.write(json.dumps(skipped, allow_nan=False)+'\n')
-                    continue
-                batch = send_to_device(default_collate([sample]), accelerator.device)
+                batch = send_to_device(collate_ppp_samples([sample]), accelerator.device)
                 with accelerator.autocast():
                     conditions = [batch[k] for k in ('bev_color_map','bev_seg_map','bev_velocity_map')]
                     if config.model.model == 'DinoPPP':
@@ -118,14 +117,23 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                 _, losses = compute_ppp_losses(decoded, batch, ppp_loss, config.train.extra)
                 fields = decoded[0] if decoded.ndim == 4 else decoded[0, :, 0]
                 fields = fields.float().cpu().numpy()
-                mask = sample['point_mask'][0].numpy().astype(bool)
-                rcs, doppler = (sample[k][0].numpy() for k in ('rcs_target','doppler_target'))
-                stats, mass, marks = summarize_fields(fields, mask, rcs, doppler, bounds)
+                from radargen.ppp_targets.continuous import sample_detections, display_grids
+                limit = float(sample.get('point_limit', config.data.extra['coordinate_range']))
+                detections = sample_detections(sample, fields.shape[-2:], limit)
+                counts, rcs, doppler = display_grids(detections, fields.shape[-2:], limit)
+                mask = counts > 0
+                stats, mass, marks = summarize_fields(fields, mask, rcs, doppler, bounds,
+                                                       detections=detections, point_limit=limit)
+                h, w = mask.shape
+                gt_x = (detections[:, 0] + limit) / (2 * limit) * w
+                gt_y = (limit - detections[:, 1]) / (2 * limit) * h
                 # Dataset access above validates immutable source and metadata.
                 from torch.utils.data import Subset
+                from radargen.training.ppp_timing import TimedDataset
                 base, base_index = dataset, index
-                while isinstance(base, Subset):
-                    base_index = base.indices[base_index]
+                while isinstance(base, (Subset, TimedDataset)):
+                    if isinstance(base, Subset):
+                        base_index = base.indices[base_index]
                     base = base.dataset
                 source = base.frame_index[base_index][0]
                 with h5py.File(source, 'r') as handle:
@@ -143,13 +151,13 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                 rows.append(row)
                 if indices is None:
                     np.savez_compressed(directory/f'step_{step:06d}_sample_{index}.npz',
-                        fields=fields, point_mask=mask, rcs_target=rcs, doppler_target=doppler)
+                        fields=fields, detections=detections, point_limit=limit, detection_counts=counts)
 
                 # Ignore empty GT cells; include all predicted heatmap values.
                 mark_norms = []
-                for target, prediction in zip((rcs, doppler), marks):
-                    low = float(min(target[mask].min(), prediction.min()))
-                    high = float(max(target[mask].max(), prediction.max()))
+                for target, prediction in zip((detections[:, 2], detections[:, 3]), marks):
+                    low = float(min(target.min() if len(target) else prediction.min(), prediction.min()))
+                    high = float(max(target.max() if len(target) else prediction.max(), prediction.max()))
                     if low == high:
                         padding = max(abs(low) * 0.01, 1.0e-6)
                         low, high = low - padding, high + padding
@@ -196,49 +204,27 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                     ax.set_ylabel('m')
                 axes = all_axes[1:]
 
-                # 11: GT occupied cells
+                # GT counts retain multiple detections in the same cell.
                 ax = axes[0, 0]
                 im = ax.imshow(
-                    mask.astype(np.uint8),
+                    counts,
                     origin='upper',
                     extent=(0, w, h, 0),
                     cmap='gray',
                     vmin=0,
-                    vmax=1,
+                    vmax=max(1, counts.max()),
                     aspect='auto',
                 )
-                ax.set_title('GT occupied cells')
+                ax.set_title('GT detection counts')
                 fig.colorbar(im, ax=ax)
 
-                # 12 and 13: GT marks at occupied cells
-                gt_mark_panels = (
-                    (axes[0, 1], rcs, 'GT RCS', 'viridis', rcs_norm),
-                    (axes[0, 2], doppler, 'GT Doppler', 'coolwarm', doppler_norm),
-                )
-                for ax, target, title, cmap, norm in gt_mark_panels:
-                    if indices is not None:
-                        yy, xx = np.nonzero(mask)
-                        im = ax.scatter(
-                            xx + 0.5,
-                            yy + 0.5,
-                            c=target[mask],
-                            s=8,
-                            cmap=cmap,
-                            norm=norm,
-                        )
-                        ax.set_xlim(0, w)
-                        ax.set_ylim(h, 0)
-                        ax.set_aspect('auto')
-                    else:
-                        panel = np.where(mask, target, np.nan)
-                        im = ax.imshow(
-                            panel,
-                            origin='upper',
-                            extent=(0, w, h, 0),
-                            cmap=cmap,
-                            norm=norm,
-                            aspect='auto',
-                        )
+                for ax, values, title, cmap, norm in (
+                    (axes[0, 1], detections[:, 2], 'GT RCS per detection', 'viridis', rcs_norm),
+                    (axes[0, 2], detections[:, 3], 'GT Doppler per detection', 'coolwarm', doppler_norm),
+                ):
+                    im = ax.scatter(gt_x, gt_y, c=values, s=8, cmap=cmap, norm=norm)
+                    ax.set_xlim(0, w)
+                    ax.set_ylim(h, 0)
                     ax.set_title(title)
                     fig.colorbar(im, ax=ax)
 
@@ -269,13 +255,12 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                     cmap='hot',
                     aspect='auto',
                 )
-                gt_y, gt_x = np.nonzero(mask)
                 ax.scatter(
-                    gt_x + 0.5,
-                    gt_y + 0.5,
+                    gt_x,
+                    gt_y,
                     s=8,
                     color='lightskyblue',
-                    label='GT occupied cells',
+                    label='GT detections',
                 )
                 ax.legend(loc='upper right')
                 ax.set_title(f'Pred λ^γ (γ={gamma})')
@@ -322,11 +307,12 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                     y=1.01,
                 )
                 fig.tight_layout()
-                fig.savefig(
-                    directory / f'step_{step:06d}_sample_{index}.png',
-                    dpi=110,
-                    bbox_inches='tight',
-                )
+                if writer is None:
+                    fig.savefig(
+                        directory / f'step_{step:06d}_sample_{index}.png',
+                        dpi=110,
+                        bbox_inches='tight',
+                    )
                 if writer is not None:
                     from radargen.training.tensorboard_logging import log_scalars
                     prefix = 'overfit' if indices is None else 'prediction'
@@ -339,10 +325,10 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
             for row in rows:
                 stream.write(json.dumps(row, allow_nan=False)+'\n')
         if not rows:
-            return  # All selected samples were empty; finally still restores RNG/modes.
+            return  # No selected samples; finally still restores RNG/modes.
         mean = {key: float(np.mean([row[key] for row in rows])) for key in
                 ('loss_total','loss_ppp_raw','loss_rcs_raw','loss_doppler_raw','expected_count',
-                 'active_cell_count','count_abs_error_active','rcs_mae_at_targets','doppler_mae_at_targets')}
+                 'detection_count','collision_count','count_abs_error_detections','active_cell_count','count_abs_error_active','rcs_mae_at_targets','doppler_mae_at_targets')}
         log.info('WP8 eval step %d: %s', step, json.dumps(mean, allow_nan=False))
     finally:
         for module, training in modes:

@@ -1,5 +1,5 @@
 # Random DiT; pretrained DC-AE and empty-text embeddings retained.
-# Four-epoch PPP training run: four GPUs, batch 5/GPU, LR 1e-4 for epochs 1–2, 5e-5 for epochs 3–4; 200-update linear warmup.
+# Initial/resumed + fine-tuning cosine LR trajectory compressed into six epochs.
 data:
   dataset_dir: "/e/scratch/nxtaim-1/public/truckscenes/man-truckscenes"  # Where the TruckScenes dataset lives
   ppp_data_dir: "/e/scratch/nxtaim-1/public/truckscenes/RadarGen_preprocessed"
@@ -91,11 +91,13 @@ train:
     lr: 2.0e-5
     type: CAMEWrapper
     weight_decay: 0.0
-  lr_schedule: epoch_step
+  # Earlier cosine decay; final quarter stays at the minimum LR.
+  lr_schedule: cosine_updates
   lr_schedule_args:
-    switch_epoch: 4
-    factor: 0.5
     num_warmup_steps: 200
+    min_lr_ratio: 0.05
+    decay_start_fraction: 0.0
+    decay_end_fraction: 0.75
   log_interval: 20
   save_model_epochs: 1
   save_model_steps: 1000  # Save at epoch end; also on an orderly time-limit stop.
@@ -124,4 +126,6 @@ train:
 work_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/PPP_train
 name: PPP_train
 tracker_project_name: train_radargen_ppp
-report_to: none  # TensorBoard diagnostics will be added separately.
+report_to: none  # Metrics and figures are written through tensorboard: true.
+
+tensorboard: true
