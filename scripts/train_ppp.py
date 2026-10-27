@@ -44,7 +44,7 @@ def validate_ppp_config(config: SanaConfig) -> None:
         bounds = [data.get(f"{prefix}_{suffix}") for suffix in ("min", "max")]
         require(all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in bounds), f"{prefix} bounds must be finite numbers")
         require(bounds[0] < bounds[1], f"{prefix}_min must be less than {prefix}_max")
-    direct = config.model.model == "DinoPPP"
+    direct = config.model.model in ("DinoPPP", "Camera2Radar")
     require(direct or config.model.model == "RadarGenPPP_600M_P1_D28", "Unknown PPP model")
     require(config.data.image_size == config.model.image_size == 512, "PPP data/model image_size must be 512")
     model = config.model.extra
@@ -144,17 +144,21 @@ def training_microbatch(model, condition_encoder, batch, text_provider, ppp_loss
     """
     import random
     with accelerator.autocast():
-        direct = config.model.model == 'DinoPPP'
-        conditions = [batch[k] for k in ('bev_color_map', 'bev_seg_map', 'bev_velocity_map')]
-        if not direct:
-            conditions = condition_encoder(conditions)
-        dropout = config.train.extra.get('conditioning_dropout', 0.1)
-        conditions = [c * 0.0 if random.random() < dropout else c for c in conditions]
-        if direct:
-            decoded = model(*conditions)
+        direct = config.model.model in ('DinoPPP', 'Camera2Radar')
+        if config.model.model == 'Camera2Radar':
+            decoded = model(*(batch[k] for k in
+                ('camera_images', 'camera_intrinsics', 'reference_to_camera')))
         else:
-            y, mask = text_provider(conditions[0].shape[0], accelerator.device)
-            decoded = model(conditions, y, mask=mask, data_info=batch.get('data_info'))
+            conditions = [batch[k] for k in ('bev_color_map', 'bev_seg_map', 'bev_velocity_map')]
+            if not direct:
+                conditions = condition_encoder(conditions)
+            dropout = config.train.extra.get('conditioning_dropout', 0.1)
+            conditions = [c * 0.0 if random.random() < dropout else c for c in conditions]
+            if direct:
+                decoded = model(*conditions)
+            else:
+                y, mask = text_provider(conditions[0].shape[0], accelerator.device)
+                decoded = model(conditions, y, mask=mask, data_info=batch.get('data_info'))
     return compute_ppp_losses(decoded, batch, ppp_loss, config.train.extra)
 
 
@@ -220,7 +224,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     from radargen.training.ppp_checkpoint import (save_ppp_checkpoint, load_ppp_checkpoint,
                                                 capture_rng_state, restore_rng_state)
     config = copy.deepcopy(config)
-    direct = config.model.model == 'DinoPPP'
+    direct = config.model.model in ('DinoPPP', 'Camera2Radar')
     if config.train.auto_lr and config.train.auto_lr.get('rule') == 'none':
         config.train.auto_lr = {}
     sweep = config.train.extra.get('lr_range_test', False)
@@ -280,8 +284,16 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     startup_log("dataset construction begin", injected=dataset is not None)
     if dataset is None:
         from radargen.training.radargen_ppp_dataset import build_radargen_ppp_dataset_from_config
-        dataset = build_radargen_ppp_dataset_from_config(config,
-            config_path=getattr(options, "config_path", "configs/RadarGen_PPP_4GPU_utilization.yaml"))
+        if config.model.model == 'Camera2Radar':
+            from radargen.cam2radar.dataset import CameraRadarDataset
+            dataset = CameraRadarDataset(config.data.ppp_manifest_path,
+                config.data.extra.get('raw_dataset_dir', config.data.dataset_dir))
+            for key, value in dataset.contract['normalization'].items():
+                if config.data.extra.get(key) != value:
+                    raise ValueError(f'Raw dataset normalization differs from manifest: {key}')
+        else:
+            dataset = build_radargen_ppp_dataset_from_config(config,
+                config_path=getattr(options, "config_path", "configs/RadarGen_PPP_4GPU_utilization.yaml"))
     startup_log("dataset construction end", validated_pairs=len(dataset))
     startup_log("model loading begin", injected=components is not None)
     if components is None:
@@ -699,6 +711,15 @@ def _run_training(config, options, *, components, dataset, text_provider, output
             wait / len(steady), compute / len(steady), wait / max(wait + compute, 1e-12),
             timing_samples[0][0])
     predict()
+    final_indices = config.train.extra.get('final_prediction_indices')
+    if config.model.model == 'Camera2Radar' and final_indices:
+        accelerator.wait_for_everyone()
+        if accelerator.is_main_process:
+            from radargen.cam2radar.visualization import save_final_predictions
+            save_final_predictions(accelerator.unwrap_model(model), dataset, final_indices,
+                Path(config.work_dir) / 'final_predictions', device=accelerator.device,
+                seed=config.train.seed, mixed_precision=config.model.mixed_precision)
+        accelerator.wait_for_everyone()
     if options.smoke_check:
         bare = accelerator.unwrap_model(model)
         parameters = smoke_parameters

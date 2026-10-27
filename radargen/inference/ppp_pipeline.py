@@ -40,7 +40,7 @@ class RadarGenPPPPipeline:
         fresh.model.resume_from = None
         fresh.load_from = None
         fresh.train.grad_checkpointing = False
-        if config.model.model == 'DinoPPP':
+        if config.model.model in ('DinoPPP', 'Camera2Radar'):
             from radargen.training.ppp_initialization import initialize_dino_ppp_model
 
             fresh.model.load_from = None
@@ -114,10 +114,26 @@ class RadarGenPPPPipeline:
         return {name: output[0, i, 0].float() for i, name in
                 enumerate(('log_intensity', 'rcs_raw', 'doppler_raw'))}
 
+    @torch.no_grad()
+    def predict_camera_fields(self, sample):
+        """Full raw-camera sample -> fields using the same PPP links and sampler."""
+        inputs = [sample[k].unsqueeze(0).to(self.device) for k in
+                  ('camera_images', 'camera_intrinsics', 'reference_to_camera')]
+        context = (torch.autocast('cuda', dtype=torch.bfloat16)
+                   if self.device.type == 'cuda' and self.mixed_precision == 'bf16' else nullcontext())
+        with context:
+            output = self.model(*inputs)
+        if not torch.isfinite(output).all():
+            raise ValueError('Nonfinite Camera2Radar output')
+        return {name: output[0, i].float() for i, name in
+                enumerate(('log_intensity', 'rcs_raw', 'doppler_raw'))}
+
     def predict_dataset_sample(self, dataset, index):
         """Use the validated HDF5 dataset's exact training transform and identity."""
         from radargen.training.ppp_collate import collate_ppp_samples
         sample = dataset[index]
+        if 'camera_images' in sample:
+            return self.predict_camera_fields(sample), sample['data_info']
         batch = collate_ppp_samples([sample])
         fields = self.predict_fields(*(batch[k] for k in CONDITION_KEYS), data_info=batch['data_info'])
         return fields, sample['data_info']

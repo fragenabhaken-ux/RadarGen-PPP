@@ -1,0 +1,14 @@
+# Final 110-epoch DINOv3 PPP checkpoint; exact established 50 frames; PNGs enabled.
+dataset_config: configs/PPP_train_dinov3_cont_step110.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+max_samples: 50
+plot_dpi: 110
+plot_gamma: 0.2
+model: ppp
+model_config: configs/PPP_train_dinov3_cont_step110.yaml
+checkpoint_path: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2525026_PPP_train_dinov3_cont_step110/checkpoints/epoch_110_step_10670.pth
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/PPP_validation_dinov3_2525026
+tensorboard: false
+reference_validation_records: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2455164_PPP_validation_dinov3_2438929/metrics.jsonl

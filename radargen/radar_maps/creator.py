@@ -94,6 +94,44 @@ def deduplicate_by_pixel(pcl: np.ndarray) -> np.ndarray:
     return np.vstack(unique_pc_list)
 
 
+def load_filtered_radar_detections(
+        adapter: DatasetAdapter, sample_data: dict, point_limit: float = 50.0,
+        nsweeps: int = 1, filter_camera_views: Optional[List[str]] = None,
+) -> np.ndarray:
+    """Return metric (N,8) radar detections before rasterization/deduplication.
+
+    Shares the RadarGen target producer's fusion, flat-up frustum filtering,
+    and strict square crop. Pixel collisions are intentionally retained.
+    """
+    # 1. Load the fused radar pointcloud (in flat-up frame)
+    pcl = adapter.load_radar_pointcloud(sample_data, nsweeps=nsweeps)
+    logger.debug(f"Loaded {pcl.shape[0]} radar points")
+
+    # 2. Get ref→flat-up transform for camera frustum filtering
+    # Points from load_radar_pointcloud are in flat-up frame, so we need to
+    # transform cameras to flat-up for correct frustum filtering
+    ref_sensor_token = sample_data.get(adapter.reference_sensor)
+    if ref_sensor_token is None:
+        raise ValueError(f"{adapter.reference_sensor} not found in sample_data")
+
+    ref_to_flat_up = adapter.get_ref_to_vehicle_flat_up_transform(ref_sensor_token)
+
+    # 3. Filter by camera frustum (points are in flat-up, so transform cameras to flat-up)
+    pcl = adapter.filter_by_camera_frustum(
+        pcl,
+        sample_data,
+        camera_views=filter_camera_views,
+        ref_to_points_transform=ref_to_flat_up
+    )
+    logger.debug(f"After frustum filter: {pcl.shape[0]} points")
+
+    # 3. Filter by square range
+    pcl = filter_by_range(pcl, point_limit)
+    logger.debug(f"After range filter: {pcl.shape[0]} points (limit={point_limit}m)")
+
+    return pcl
+
+
 def create_radar_maps_for_frame(
         adapter: DatasetAdapter,
         sample_data: dict,
@@ -131,31 +169,8 @@ def create_radar_maps_for_frame(
     Returns:
         RadarMapsGenerationOutput containing PD, RCS, and Doppler maps
     """
-    # 1. Load the fused radar pointcloud (in flat-up frame)
-    pcl = adapter.load_radar_pointcloud(sample_data, nsweeps=nsweeps)
-    logger.debug(f"Loaded {pcl.shape[0]} radar points")
-
-    # 2. Get ref→flat-up transform for camera frustum filtering
-    # Points from load_radar_pointcloud are in flat-up frame, so we need to
-    # transform cameras to flat-up for correct frustum filtering
-    ref_sensor_token = sample_data.get(adapter.reference_sensor)
-    if ref_sensor_token is None:
-        raise ValueError(f"{adapter.reference_sensor} not found in sample_data")
-
-    ref_to_flat_up = adapter.get_ref_to_vehicle_flat_up_transform(ref_sensor_token)
-
-    # 3. Filter by camera frustum (points are in flat-up, so transform cameras to flat-up)
-    pcl = adapter.filter_by_camera_frustum(
-        pcl,
-        sample_data,
-        camera_views=filter_camera_views,
-        ref_to_points_transform=ref_to_flat_up
-    )
-    logger.debug(f"After frustum filter: {pcl.shape[0]} points")
-
-    # 3. Filter by square range
-    pcl = filter_by_range(pcl, point_limit)
-    logger.debug(f"After range filter: {pcl.shape[0]} points (limit={point_limit}m)")
+    pcl = load_filtered_radar_detections(
+        adapter, sample_data, point_limit, nsweeps, filter_camera_views)
 
     if radar_callback is not None:
         radar_callback(pcl.copy())

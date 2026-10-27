@@ -1,0 +1,85 @@
+{
+  "manifest_identity": "54905d9fa35bc4fbe5d5cf961a63caf9862f92e265ae5ac87d1cf7e519966ee1",
+  "samples": [
+    {
+      "index": 0,
+      "scene": "d08667f00c6245e89a20240a14aafd53",
+      "frame": 0,
+      "reference_sample_data_token": "2d3e4596a8b245748b60c5396bd4e457",
+      "camera_t0_sample_data_tokens": [
+        "44872ae14bcd4ebf878d7a8fbc8d7e36",
+        "befad733c0094796ace779a626da9102",
+        "a90d058cbd6a46648a719a6236452e1f",
+        "f50035d2e8134952bc71969a375f01dd"
+      ],
+      "radar_t0_sample_data_tokens": [
+        "47d271bbefab414b9538e1181c642718",
+        "e2d0c79a57034664bf12603ee7d8fa21",
+        "b68c049dea9a4ab2bedea2afb23ba822",
+        "f348c5444f104aabbeec1db790a4687d",
+        "f6a43fe7f7a84e56a077f6af9d994901",
+        "1c2f64252de34aa59dea109eba7aa9d0"
+      ]
+    },
+    {
+      "index": 1,
+      "scene": "d08667f00c6245e89a20240a14aafd53",
+      "frame": 1,
+      "reference_sample_data_token": "fd0402a073c84bfaa54d060756f4530d",
+      "camera_t0_sample_data_tokens": [
+        "2c60e9b584c7419da0299001ffb3ee43",
+        "b6a26432544e44f79d40a391780011c1",
+        "4e25de7aae89435d88b2533a4310fd78",
+        "267bc6bdd8584fd094cd0ede19323547"
+      ],
+      "radar_t0_sample_data_tokens": [
+        "bc56c18d34fb41b1a26be3fb85d81d3b",
+        "a8698da712a149d78d5293e2459984ad",
+        "1fd9f9d5a4ac4f9eba817c547ea6cb0e",
+        "3fe8276d49f6412c8e55b266e9a6d575",
+        "da88a61d81af4a15a1903930efa90407",
+        "ff646da314794311bc9943c556634d29"
+      ]
+    },
+    {
+      "index": 194,
+      "scene": "0f869ee9a3cf47c0aeb8e7c47dc23af1",
+      "frame": 0,
+      "reference_sample_data_token": "dcc530140b9a4e08984dbc909d0bc7f0",
+      "camera_t0_sample_data_tokens": [
+        "a2fc00d8759840fca7d5d49c374104dc",
+        "0c58d723451948869fc9ba1e38b61e41",
+        "39572294a1aa48fd92a92d79753f4894",
+        "01fa4fc2573d4b739a4a066059af6f96"
+      ],
+      "radar_t0_sample_data_tokens": [
+        "17643cac95df422ea919393177b440d9",
+        "5e1d8cf2a7494685ad2d2fefd821606a",
+        "4db3a6e79f234736869ef76f4f7d98eb",
+        "8540cefb7350471fbab07eec484a9516",
+        "987919cdcf7d4e0fb07825f0bed70bcc",
+        "9233c302880a4bbdb3474ba3e869f6a8"
+      ]
+    },
+    {
+      "index": 195,
+      "scene": "0f869ee9a3cf47c0aeb8e7c47dc23af1",
+      "frame": 1,
+      "reference_sample_data_token": "b3b4c926b6bc454a8f64283765994ed0",
+      "camera_t0_sample_data_tokens": [
+        "e27b39f069d4416a8adca6bd82baa7a6",
+        "4d523315c77c4efdbd487489a1a31eaf",
+        "1007cabccaad49289495b3df8870c535",
+        "21a6bdaa8ca24034aa7baa233949d7f0"
+      ],
+      "radar_t0_sample_data_tokens": [
+        "b63a5136e61946f6a204d4c841155338",
+        "26ff490a647648688422db89e63b7031",
+        "023c2052e4924c5bba978fb8e739270d",
+        "967d1e596b224878b7bcd6356371cde8",
+        "d01e4691d5e74d91be83936b48c281da",
+        "a90c99cd01114797981552a4f35ec090"
+      ]
+    }
+  ]
+}

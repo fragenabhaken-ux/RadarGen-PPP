@@ -1,0 +1,14 @@
+dataset_config: configs/Camera2Radar_train.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+max_samples: 50
+plot_dpi: 110
+plot_gamma: 0.2
+model: ppp
+model_config: configs/Camera2Radar_train.yaml
+checkpoint_path: /path/to/Camera2Radar/checkpoint.pth
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/Camera2Radar
+tensorboard: false
+raw_dataset_dir: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
+reference_validation_records: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2455164_PPP_validation_dinov3_2438929/metrics.jsonl

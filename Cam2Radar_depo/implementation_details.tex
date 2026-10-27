@@ -1,0 +1,178 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[margin=25mm]{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\title{Camera2Radar: Implementation Details and Change Log}
+\author{RadarGen Master Thesis Project}
+\date{27 October 2026}
+\begin{document}
+\maketitle
+
+\section{Purpose and documentation contract}
+This document records implemented behavior, technical decisions, affected files, and focused verification. The companion \path{Cam2Radar_depo/implementation_notes.tex} records the agreed design and implementation plan. A design described there is not evidence of an implemented or validated capability.
+
+Update this log whenever a Camera2Radar implementation change is made, in the same work increment as the code. Include the relevant source/configuration paths and enough detail for an ML practitioner to understand the mechanism and assess its consequences without reconstructing the conversation. If an implementation changes an agreed design, update the design notes as well.
+
+Entries should explain the behavior and its motivation, tensor contracts where they matter, coordinate systems and units, mathematical parameterizations, gradient flow, and compatibility implications. Document non-obvious consequences such as token ordering, positional-encoding scales, intensity measure, masking, or checkpoint incompatibility. Cite upstream code/papers and pin revisions when incorporating external implementations. Record unresolved limitations and distinguish measured results from expectations.
+
+Keep prose and code docstrings concise. Docstrings should state the module's role, meaningful input/output shapes, conventions, and non-obvious assumptions. Avoid narrating obvious assignments, listing routine imports, or duplicating entire implementations. Explain choices that a knowledgeable reviewer would question: why this representation, where geometry enters attention, what remains learned, and how output/loss semantics are preserved.
+
+\section{Validation and assertions}
+Use a small number of checks at real boundaries: external inputs, ambiguous coordinate conventions, incompatible configurations, or conditions that would otherwise silently corrupt targets or training. Do not repeatedly assert properties already guaranteed by construction or add checks throughout hot paths for established tensor layouts. Prefer clear failures at the responsible boundary to redundant defensive code.
+
+Verification should be proportional to the change. Planned checks are representative raw-target equivalence, geometric projection agreement, one forward/backward batch with memory measurement, a small overfit experiment, and short training/resume/evaluation runs. These are planned, not completed. Add further testing only when a change or observed failure warrants it. Documentation-only edits require source inspection, not ML execution.
+
+\section{Implementation status}
+At creation of this log, Camera2Radar runtime code has not been implemented. Existing repository and upstream interfaces have been inspected, but a TruckScenes-to-RayRoPE numerical integration has not been run. The four-camera raw-data path, RayRoPE neck, Cartesian BEV head, and training/evaluation integration remain planned.
+
+\section{Change log}
+\subsection{27 October 2026: establish implementation documentation}
+\paragraph{Files.}
+Created \path{Cam2Radar_depo/implementation_details.tex}. Updated \path{Cam2Radar_depo/implementation_notes.tex} to link this log and its update policy.
+
+\paragraph{Behavior and rationale.}
+Established a technical implementation record separate from the architecture discussion. No model, dataset, training, or evaluation behavior changed. Subsequent implementation entries must describe actual changes rather than repeat the whole roadmap.
+
+\paragraph{Verification.}
+Inspected LaTeX source structure. PDF compilation is not reported as completed.
+
+\subsection{27 October 2026: raw inventory path and channel-fusion decision}
+\paragraph{Head interface decision.}
+After joint neck attention, restore tokens to $(B,4,D,H_p,W_p)$ and concatenate cameras along channels, giving $(B,4D,H_p,W_p)$. A learned channel projection will mix these features before the progressive Cartesian BEV head. Channel concatenation was explicitly selected over spatial tiling: it avoids artificial convolutional seams between cameras while retaining each camera's patch layout. Equal patch indices across cameras are not physical correspondences; joint geometric attention and the learned head must establish the useful mapping. The channel order is fixed by the inventory camera order. The head itself is not yet implemented.
+
+\paragraph{Files and behavior.}
+Created \path{radargen/cam2radar/__init__.py} and \path{radargen/cam2radar/dataset.py}. The dataset reads the existing manifest, checks its canonical digest/version, and reconstructs observations from the stored t0 sensor tokens rather than selecting nearest frames again. It loads full RGB uint8 camera tensors, metric continuous detections, intrinsics, timestamps, and reference-to-camera transforms without HDF5 access. Devkit initialization is lazy and process-local for DataLoader workers. This initial class consumes the prepared training-style manifest; validation identity export and trainer integration are still outstanding.
+
+Changed \path{radargen/radar_maps/creator.py}: extracted \texttt{load\_filtered\_radar\_detections} from the existing producer and made raster creation call it. The raw path and raster callback now share fusion, camera-frustum filtering in vehicle-flat-up coordinates, and strict square filtering. Detections retain pixel collisions and are returned before image-coordinate normalization. Existing rasterization and callback order are preserved.
+
+The dataset composes $T_{\mathrm{BEV}\leftarrow\mathrm{ref}}T_{\mathrm{ref}\leftarrow\mathrm{cam}}$ and inverts it for RayRoPE's reference-to-camera convention. No ray encoding, image padding, or input normalization is performed yet. Targets use columns $(x,y,\mathrm{RCS},\mathrm{Doppler})$ from the shared metric cloud and can use existing continuous PPP collation.
+
+\paragraph{Verification.}
+Python compilation passed for the dataset and refactored producer. Added \path{tests/test_cam2radar_targets.py}, comparing raw extraction to the raster callback and covering strict range boundaries and retained colliding detections while substituting irrelevant raster kernels. Runtime checks and real-data equivalence are recorded below as they complete. The initial direct virtualenv invocation lacked NumPy because the supported cluster module environment was not activated; this is an environment setup failure, not a passed runtime test. No end-to-end model is implemented yet. With the supported cluster environment activated, manifest loading succeeded (83,554 samples, 50 m point limit), and the focused pytest passed (one test). Real-file target equivalence and numerical geometry verification remain pending.
+
+\paragraph{Approved input policy: bottom/right padding.}
+The user approved padding native $943\times1980$ images to $944\times1984$, yielding $59\times124$ patches per camera (7,316 per view, 29,264 across four views). No source pixels are removed; intrinsics and the image origin remain unchanged. Partial border patches contain real pixels and are not automatically invalid tokens.
+
+\subsection{27 October 2026: image input, calibrated rays, and channel fusion}
+\paragraph{Files and mechanism.}
+Created \path{radargen/cam2radar/input.py}. \texttt{CameraInput} accepts uint8 RGB $(B,V,3,H,W)$, applies ImageNet mean/std normalization appropriate to the selected web-image DINOv3 checkpoint, and pads bottom/right with zero in normalized space (the RGB mean). It returns the native extent for downstream border handling. It performs no crop, flip, or resize. This input module is implemented but not yet connected to a full model.
+
+\texttt{patch\_center\_rays} computes camera origins and unit patch-centre directions in the shared reference frame using inverse intrinsics and the transpose of reference-to-camera rotations. Depth is not inferred by this utility: it supports calibration diagnostics rather than replacing RayRoPE's projective encoding. Image dimensions supplied to it describe the padded grid. RayRoPE's patch-corner treatment for partially padded border patches remains a separate integration question.
+
+Created \path{radargen/cam2radar/fusion.py}. \texttt{CameraChannelFusion} concatenates camera-major grids into $4D$ channels and applies a learned $1\times1$ projection, GroupNorm, and GELU to return $D$ channels. This belongs after joint neck attention and before the BEV head; it does not impose spatial tiling or calibrated BEV projection.
+
+\paragraph{Verification.}
+Created \path{tests/test_cam2radar_geometry.py}. One combined test checks bottom/right normalized-zero padding and projects points along constructed rays back to their patch centres for distinct rotated/translated cameras. Both focused Camera2Radar tests passed (two tests total); these are synthetic contract checks, not real-data target equivalence or evidence of model training. The RayRoPE upstream HEAD was identified as \texttt{4495152eb8bbb27a34db1259212574d46a365cef} for inspection; no upstream code has yet been incorporated into the repository.
+
+\subsection{27 October 2026: real-data target comparison diagnostic}
+Created \path{scripts/check_cam2radar_data.py}. It loads explicitly requested inventory indices through the raw dataset and compares all continuous target columns to the corresponding stored HDF5 arrays, preserving ordering and counts. It reports camera shapes, scene/frame identity, and reference keyframe status. HDF5 is a diagnostic reference only. The comparison succeeded for training inventory index 0: four native RGB images and all 1,310 continuous detections matched the HDF5 reference within the diagnostic tolerance. Index 1 could not load its non-keyframe camera JPEG: the permanent sweeps tree lacks the file. Camera and radar scene archives exist for this scene (approximately 342 MB and 11 MB respectively); the existing preprocessing producer stages these archives. Thus permanent-tree JPEG/PCD access alone does not yet cover the full inventory. No non-keyframe equivalence result is claimed. Added an explicit missing-camera error in the new dataset to report the storage requirement rather than an opaque OpenCV conversion failure. Archive-backed training access remains unimplemented pending a storage-policy decision.
+
+\paragraph{Head expansion clarification.}
+The approved padded input yields a $59\times124$ feature grid. The thesis head's factor-8 shuffle would produce only $472\times992$ features, too short for compression-only pooling to a $512\times512$ target. A factor-16 shuffle followed by the thesis width-stride-2 compression yields $944\times992$ before pooling, but increases intermediate activation memory. A staged expansion is another option. This is an unresolved architectural choice and must be clarified before implementing the head topology.
+
+\subsection{27 October 2026: RayRoPE model, storage preparation, and shared pipeline}
+\paragraph{Resolved implementation choices.}
+Following authorization to select the remaining details, use one-time archive staging before training and a progressive feature expansion head. Staging preserves arbitrary frame sampling without per-worker decompression. The head avoids an immediate full-width factor-16 expansion: isotropic factors $2,2,2$ followed by vertical factor 2 yield $59\times124\rightarrow118\times248\rightarrow236\times496\rightarrow472\times992\rightarrow944\times992$. Channel widths decrease through 128, 64, 32, 16. Adaptive pooling maps features to $512\times512$ before the final raw-field projection; logits are not resampled. This is an architectural adaptation of the thesis mechanism, not an identical copy.
+
+\paragraph{Geometry and attention files.}
+Created \path{radargen/cam2radar/vendor/rayrope.py} and \path{radargen/cam2radar/vendor/RayRoPE_LICENSE}, adapted from MIT-licensed upstream commit \texttt{4495152eb8bbb27a34db1259212574d46a365cef}. Retained the ray-segment/projective/expected-RoPE algorithm and default three-ray value/output transforms. Removed disabled debugging scaffolding and eager compilation decorators, made depth limits and camera-origin periods instance configuration, and cast transformed attention features back to their input precision for SDPA. The default used path derives the log-depth cap from the same metric maximum as ray construction and query-depth clipping. Optional upstream modes are not the selected architecture.
+
+Created \path{radargen/cam2radar/neck.py}. Each block normalizes features, projects Q/K/V and a parallel SELU MLP, predicts two ray-depth parameters, applies Q/K RMS normalization, and performs joint RayRoPE attention. Depth projection weights initialize to zero with bias $(\log 10,1)$, giving an initially broad segment centred at 10 m. Depth projections and geometric construction use FP32; attention can use mixed precision. Geometry is constructed per call rather than stored on a long-lived attention module, preventing activation-checkpoint recomputation from observing another microbatch's calibration. The released uncertainty endpoint parameterization is retained; no auxiliary depth loss is introduced.
+
+The provisional metric maximum is 75 m (the 70.7 m BEV corner radius plus margin); the configurable camera-origin maximum period is 32 m, and the depth maximum period follows the reference rule of eight times the depth limit. These are explicit initial scale choices, not measured optima or a proof of covering every camera-axis depth. Camera-offset coverage, saturation, and full-resolution GPU memory remain to be measured. Padded boundary patches retain their original lattice coordinates; their padding carries no new scene content. Standard RayRoPE patch-corner rays are retained instead of inventing a border-specific rotary formulation.
+
+Created \path{radargen/cam2radar/model.py}. The shared DINOv3 backbone uses one shared LoRA adapter across all camera images, extracts the selected intermediate layers, projects/fuses them per image, and sends all camera tokens through the joint neck. Channel fusion then feeds the progressive Cartesian head. Outputs retain the existing order: log-intensity, raw RCS, raw signed Doppler; the existing continuous PPP loss applies physical links. DINOv3 internal positional encoding is unchanged. Frozen backbone stochastic layers remain in evaluation mode while LoRA follows model training mode.
+
+\paragraph{Storage and sample identity.}
+Created \path{scripts/prepare_cam2radar_storage.py}. It stages manifest-selected camera/radar scene archives into one dataset root with permanent sample/metadata symlinks. Preparation is serialized by a file lock; completion records bind each scene to archive paths, sizes, and mtimes. Interrupted extraction can resume only when existing file contents match the archive. Archive links, traversal, and unexpected trees are rejected. Training workers never extract archives. One scene was staged in temporary storage for verification; the full training inventory has not been staged. Added \texttt{CameraRadarDataset.from\_records} for the established validated evaluation inventory.
+
+\paragraph{Training, inference, and diagnostics.}
+Changed \path{scripts/train_ppp.py} and \path{radargen/training/ppp_initialization.py} to recognize Camera2Radar as a direct predictor, construct its manifest-backed dataset, verify normalization against the inventory, and reuse existing optimization, continuous loss, checkpoint/resume, accumulation, and logging. Conditioning-map dropout is not applied to calibrated raw images. Existing input modes retain their paths.
+
+Changed \path{radargen/inference/ppp_pipeline.py} to initialize Camera2Radar from full checkpoints and expose raw-camera field prediction using the existing PPP sampler. Changed \path{evaluation/validation.py} to supply raw images/calibration from the exact existing validation inventory and optionally require scene/frame identity equality with recorded benchmark metrics. Evaluation still uses the established HDF5 reference for ground-truth/reporting; raw training does not. Changed \path{radargen/training/ppp_overfit.py} to predict from camera batches and display all four views as a montage without accessing HDF5 conditioning maps.
+
+Created \path{configs/Camera2Radar_train.yaml}, \path{evaluation/configs/Camera2Radar_validation.yaml}, and \path{jsc_jupiter/Camera2Radar_train.sbatch}. Full-resolution training starts provisionally at one sample per GPU and eight-step accumulation; this is not a measured capacity or tuned training recipe. Validation references \path{/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2455164_PPP_validation_dinov3_2438929/metrics.jsonl} to verify the fixed 50 identities. Supply an actual trained checkpoint before evaluation. The configured staging root must be prepared before training.
+
+\paragraph{Verification and remaining work.}
+Created \path{tests/test_cam2radar_neck.py}: a small checkpointed joint-neck/channel-fusion/head backward pass passed, including nonzero gradients to learned depth projection and camera features. No pretrained full-resolution model run, GPU capacity measurement, overfit experiment, distributed training/resume run, or trained-model 50-frame evaluation has completed yet. A focused regression/data/config check is in progress; results are recorded separately below.
+
+\subsection{27 October 2026: verification results and diagnostic entry points}
+The staged scene comparison passed for training indices 0 and 1: the keyframe has 1,310 detections and the non-keyframe 1,317; all four target columns match the stored references within $10^{-5}$ absolute/relative tolerance, preserving ordering. Both samples load four native $943\times1980$ RGB images. Full-inventory equivalence is not claimed.
+
+The selected regression run produced 22 passes and one initializer compatibility failure: an existing test caller omits the model-name field. Restored its previous default to DinoPPP; that test and the joint-neck test then passed. This does not represent an unresolved regression. Training configuration validation also passed. Shared trainer tests exercise existing checkpoint/resume behavior; a real Camera2Radar training/resume run is still pending.
+
+Created \path{scripts/check_cam2radar_model.py}. The small synthetic CPU mode loaded the actual local pretrained DINOv3 backbone and ran the complete 12-block Camera2Radar forward/backward path, including continuous loss and nonzero learned-depth gradients, with a reduced image/output resolution. It returned $(1,3,16,16)$ finite fields. This checks integration, not full-resolution capacity or spatial learning. The diagnostic normalizes its PPP area using its selected output resolution.
+
+Created \path{jsc_jupiter/Camera2Radar_check.sbatch} for one allocated-GPU native-resolution forward/backward memory check. The currently visible GPU is occupied by another user's process, so no full-resolution diagnostic was launched on that shared device. The script does not depend on full-dataset staging and does not start a training run. Submitted one allocated-GPU check as Slurm job 2538194; it was pending on priority at the last inspection. No GPU result is claimed until its log is reviewed. Unnecessary inherited shape/trigonometric assertions were removed from the vendored hot path; initialization constraints and meaningful boundary failures remain.
+
+\paragraph{Real calibration verification.}
+Extended \path{scripts/check_cam2radar_data.py} to compare loaded intrinsics and composed reference-to-camera transforms against the geometry stored by the original HDF5 producer. Both the keyframe and non-keyframe checks passed at $10^{-5}$ tolerances. This verifies conventions against the existing producer in addition to the synthetic ray reprojection check.
+
+\subsection{Completed native-resolution GPU diagnostic: Slurm 2538194}
+Reviewed \path{jsc_jupiter/logs/2538194_Camera2Radar_check.out} and the corresponding error log. The native-resolution synthetic batch completed forward and backward through the pretrained backbone, 12-layer RayRoPE neck, channel fusion, Cartesian head, and continuous PPP loss. Output shape was $(1,3,512,512)$; loss was 16.3859978; measured forward/backward time was 1.5565 s; peak PyTorch allocated GPU memory was 2.8148 GiB. The diagnostic's nonzero depth-projection gradient check passed. The error log contains environment-module notices, not a model exception.
+
+These measurements describe one synthetic four-camera sample with activation checkpointing and BF16 autocast. They exclude model loading, data I/O, optimizer-step state, and a real-scene overfit experiment. They do not establish prediction quality, distributed correctness, or maximum training batch size.
+
+Updated \path{jsc_jupiter/Camera2Radar_check.sbatch} to request full-node resources (four GPUs, 288 CPUs) following the user's cluster allocation convention. The diagnostic still runs one process on one GPU; requesting the whole node does not imply distributed execution. No replacement job was submitted.
+
+\subsection{Final-only evaluation PNGs}
+Created \path{radargen/cam2radar/visualization.py}. Each figure has four camera inputs in manifest order across the top, followed by three BEV rows: ground-truth detections, predicted heatmaps, and sampled point clouds. The columns are location/intensity, RCS, and signed Doppler velocity. Ground truth is plotted directly from continuous detections, not deduplicated cells or interpolated mark maps. RCS and velocity share physical colour limits across ground truth, prediction, and sampled points. BEV axes preserve $x$ right and $y$ forward; raster heatmaps use upper-origin coordinates. Intensity display uses cell mass raised to gamma 0.2, but sampling uses the unmodified existing PPP field/sampler. Titles include ground-truth, expected, and sampled counts.
+
+Created \path{scripts/render_cam2radar_predictions.py} for rendering explicit training-inventory indices from a trained checkpoint. Changed \path{evaluation/validation.py} to use the same layout for raw-camera validation, preserving the existing layout for all older modes. Changed \path{scripts/train_ppp.py} to render configured final indices once after the training loop. Changed \path{configs/Camera2Radar_train.yaml} to disable periodic prediction figures and select indices 0 and 1 for final PNGs under \texttt{final\_predictions/}. These indices are local to the selected training dataset if a subset is configured; standalone renderer indices address the full manifest.
+
+The final PNG writer uses deterministic per-sample sampling seeds and restores model training mode. It writes no intermediate prediction PNGs. Scalar logging/checkpoint behavior is unchanged. No trained Camera2Radar checkpoint currently exists, so an actual final trained-result PNG has not yet been produced. A synthetic layout fixture is used only to inspect rendering; it is not presented as model evaluation. The user selected final overfit predictions; no untrained preview is delivered.
+
+\subsection{Four-frame overfit run for final PNGs: Slurm 2538278}
+Created \path{configs/Camera2Radar_overfit.yaml}, \path{jsc_jupiter/Camera2Radar_overfit.sbatch}, and \path{Cam2Radar_depo/overfit_frames.json}. The provenance JSON records the training manifest digest and exact sensor tokens for inventory indices 0, 1, 194, and 195 from two scenes. The run stages only those two scenes into the configured persistent raw root, then trains for 500 optimizer updates with four GPUs, batch one per rank, and no accumulation. Zero loader workers per rank avoid multiplying the devkit database across worker processes for this tiny experiment. Initial LR is $10^{-3}$ with ten-update warmup and a factor-0.1 reduction after epoch 350. This is an overfit diagnostic, not a generalization benchmark.
+
+Periodic prediction/overfit images are disabled. At the end, the four subset-local indices produce four final PNGs under the run's \texttt{final\_predictions/} directory, using the layout above. Scalar TensorBoard logs and limited checkpoints remain available. Requested one full node (four GPUs and 288 CPUs) for one hour; submitted job 2538278. Its dynamic run directory is \path{/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2538278_Camera2Radar_overfit}. Configuration validation, shell syntax, and a visually inspected synthetic layout render passed. Actual overfit results are pending; no prediction quality or final PNG is claimed yet.
+
+\subsection{Full-inventory hardware measurement before the LR sweep: Slurm 2538690}
+The user requested establishing the training batch size before the LR range test. No LR sweep was submitted. Created \path{configs/Camera2Radar_hardware.yaml} and \path{jsc_jupiter/Camera2Radar_hardware.sbatch}. This uses the full original training manifest (83,554 frames, 431 scenes), with no scene/frame subset. All required scene archives were checked to exist; their combined compressed size is approximately 107.0 GiB. Preparation stages every scene before random-access training and reuses the two previously completed scenes.
+
+The hardware run starts fresh from pretrained DINOv3 with batch 32 per GPU, four GPUs (global batch 128), accumulation one, BF16, activation checkpointing, four loader workers per rank, and 200 optimizer updates. Fixed LR $10^{-4}$ avoids conflating capacity measurement with high-LR divergence; the epoch-step schedule uses a unit factor and no warmup. This batch is an initial capacity estimate based on the batch-one peak, not a measured maximum. The one-epoch inventory is large enough to supply 200 updates; the trainer's explicit update limit stops before a complete pass. ``Full inventory'' means every training frame is eligible, not that all frames are consumed in this short run.
+
+Timing logs separate loader wait from synchronized training computation, and rank-zero PyTorch logs report peak allocated/reserved memory including optimizer updates. \texttt{hardware\_gpu.csv} in the run directory records timestamp, GPU index, device memory, GPU/memory utilization, and power for all four GPUs every 15 seconds. This device-level view includes CUDA/NCCL overhead absent from PyTorch allocations. Prediction figures and overfit diagnostics are disabled; the final checkpoint and scalar/TensorBoard logs remain enabled.
+
+Requested one full node (four GPUs, 288 CPUs), six-hour limit including full archive staging and the larger-batch measurement. Submitted job 2538690. Configuration validation, shell syntax, and whitespace checks passed. A scheduler review identified that empty milestone lists are rejected; the configuration uses a neutral milestone/factor instead. Results and the appropriate production batch size remain pending. The intended operating target is below the approximately 93 GiB device budget with headroom; no automatic batch enlargement is performed.
+
+\paragraph{Hardware-run scheduling correction.}
+Following the user's queue-access concern, reduced pending job 2538690 from six hours to one hour with \texttt{scontrol update}, retaining its job ID. Updated \path{jsc_jupiter/Camera2Radar_hardware.sbatch} to request one hour on future submissions. The original request was overly generous for queue access. The 200-update cap is unchanged; completion within the shorter allocation is not guaranteed because staging and batch-32 throughput are unmeasured. Completed scene staging survives a time limit and is reused on the next preparation run.
+
+\subsection{One-hour Camera2Radar exponential LR range test}
+The user selected batch 30 per GPU (global batch 120, accumulation one) after batch 32 approached the device-memory budget. Updated \path{configs/Camera2Radar_train.yaml} accordingly. Created \path{configs/Camera2Radar_LR_range.yaml} and \path{jsc_jupiter/Camera2Radar_LR_range.sbatch}. The sweep uses all 83,554 original training frames as its eligible inventory; all 431 scenes are now staged, so this job performs only a fast completion-marker preflight rather than extraction.
+
+To fit the accepted one-hour allocation, reduced the proposed 1,000-update sweep to 150 optimizer updates. Actual optimizer learning rates follow
+\[
+\eta_k=10^{-7}(10^7)^{k/149},\qquad k=0,\ldots,149.
+\]
+There is no warmup, automatic LR scaling, or gradient accumulation. The existing exponential scheduler advances once per applied optimizer update, independently of GPU count. Initialization uses pretrained DINOv3 and fresh trainable components, not overfit or hardware-run weights. Existing BF16, activation checkpointing, AdamW settings, gradient clipping, and continuous-loss weights are retained so the selected LR is relevant to that training setup. The sweep is a coarse diagnostic, not a comparison of independent models trained at each LR.
+
+Every update logs its actual applied LR and total/PPP/RCS/Doppler losses, including TensorBoard scalars. Checkpoint saving and prediction figures are disabled; sweep weights are discarded. The launcher reuses \path{scripts/plot_ppp_lr_range.py} to write \texttt{lr\_range/lr\_loss.png}: raw and EWMA-smoothed total loss against logarithmic LR, with smoothing beta 0.8 for the short sweep. It attempts plotting even after a numerical training failure at high LR, preserving the training exit status. Component losses remain in the per-update logs/TensorBoard. The requested allocation is one full node, four GPUs, 288 CPUs, one hour; approximately 48--50 minutes of compute are estimated from the batch-32 timings, not guaranteed.
+
+Configuration validation, shell syntax, whitespace checks, and a direct optimizer/scheduler endpoint check are performed before submission. No additional broad test run is needed for these configuration-only changes. Submitted as Slurm job 2541534. Expected plot location: \path{/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2541534_Camera2Radar_LR_range/lr_range/lr_loss.png}. No sweep results are available at submission.
+
+\paragraph{LR sweep result and readable plot.}
+Job 2541534 recorded 122 finite-loss updates, ending at applied LR 0.0483686, then stopped on a nonfinite gradient norm. The launcher produced the planned full-range plot from the error log despite the failed training exit. A very large high-LR loss spike (order $10^{15}$) dominates its linear loss axis. Generated a second view with the existing plotter, unchanged records and EWMA beta 0.8, restricting the displayed loss axis to $[0,50]$: \texttt{lr\_range/lr\_loss\_zoom.png}. This intentionally clips divergence spikes to make the ordinary-loss region readable; the original \texttt{lr\_loss.png} remains available. No training LR is selected solely from a noisy per-update minimum.
+
+\section{Running the implementation}
+Prepare the training storage once, then use the shared trainer with the dedicated configuration. The following commands are run from the repository root in the supported cluster environment:
+\begin{quote}\small
+\texttt{python -m scripts.prepare\_cam2radar\_storage}\\
+\texttt{\quad --output-root /e/scratch/nxtaim-1/huber7/work\_dirs\_RadarGen/cam2radar\_raw}\\[3pt]
+\texttt{sbatch jsc\_jupiter/Camera2Radar\_train.sbatch}
+\end{quote}
+The first command defaults to the established training manifest and archive locations. It may require substantial storage; only a single temporary scene has been staged during implementation. It is preparation of source files, not learned camera preprocessing. For diagnostic comparisons use \texttt{python -m scripts.check\_cam2radar\_data --dataset-dir <staged-root> --indices 0 1}. For validation, supply a real trained checkpoint in \path{evaluation/configs/Camera2Radar_validation.yaml} and use the existing validation runner. The new configuration verifies the selected 50 identities against the recorded benchmark before prediction.
+
+\section{Structure of future implementation entries}
+Use a dated, descriptive subsection per coherent implementation increment. Cover the following in short paragraphs; omit fields that do not apply:
+\begin{itemize}[nosep]
+\item \textbf{Files and behavior:} created/changed paths, concrete functionality, and integration points.
+\item \textbf{ML mechanism:} relevant equations, feature/output layouts, geometry, parameterization, gradient paths, and rationale.
+\item \textbf{Compatibility and tradeoffs:} existing modes, checkpoints, data identity, computational cost, and remaining limitations.
+\item \textbf{Verification:} checks actually run, results, and material checks still pending.
+\end{itemize}
+Avoid repeating unchanged contracts; reference an earlier entry or the design notes instead.
+
+\end{document}

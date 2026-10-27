@@ -107,13 +107,17 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                 sample = dataset[index]
                 batch = send_to_device(collate_ppp_samples([sample]), accelerator.device)
                 with accelerator.autocast():
-                    conditions = [batch[k] for k in ('bev_color_map','bev_seg_map','bev_velocity_map')]
-                    if config.model.model == 'DinoPPP':
-                        decoded = model(*conditions)
+                    if config.model.model == 'Camera2Radar':
+                        decoded = model(*(batch[k] for k in
+                            ('camera_images', 'camera_intrinsics', 'reference_to_camera')))
                     else:
-                        conditions = encoder(conditions)
-                        y, text_mask = text_provider(1, accelerator.device)
-                        decoded = model(conditions, y, mask=text_mask, data_info=batch['data_info'])
+                        conditions = [batch[k] for k in ('bev_color_map','bev_seg_map','bev_velocity_map')]
+                        if config.model.model == 'DinoPPP':
+                            decoded = model(*conditions)
+                        else:
+                            conditions = encoder(conditions)
+                            y, text_mask = text_provider(1, accelerator.device)
+                            decoded = model(conditions, y, mask=text_mask, data_info=batch['data_info'])
                 _, losses = compute_ppp_losses(decoded, batch, ppp_loss, config.train.extra)
                 fields = decoded[0] if decoded.ndim == 4 else decoded[0, :, 0]
                 fields = fields.float().cpu().numpy()
@@ -135,14 +139,21 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                     if isinstance(base, Subset):
                         base_index = base.indices[base_index]
                     base = base.dataset
-                source = base.frame_index[base_index][0]
-                with h5py.File(source, 'r') as handle:
-                    continuous_count = len(handle['ppp_targets/rcs'])
-                    conditioning_range = float(handle['metadata/conditioning_coordinate_range'][()])
-                    conditioning_images = [
-                        handle[f'conditioning/{name}'][()]
-                        for name in ('appearance', 'semantics', 'velocity')
-                    ]
+                raw_cameras = 'camera_images' in sample
+                if raw_cameras:
+                    continuous_count = len(sample['detections'])
+                    conditioning_range = limit
+                    cameras = sample['camera_images'].permute(0, 2, 3, 1).numpy()
+                    conditioning_images = [np.concatenate([
+                        np.concatenate(cameras[:2], axis=1),
+                        np.concatenate(cameras[2:], axis=1)], axis=0)]
+                else:
+                    source = base.frame_index[base_index][0]
+                    with h5py.File(source, 'r') as handle:
+                        continuous_count = len(handle['ppp_targets/rcs'])
+                        conditioning_range = float(handle['metadata/conditioning_coordinate_range'][()])
+                        conditioning_images = [handle[f'conditioning/{name}'][()]
+                                               for name in ('appearance', 'semantics', 'velocity')]
                 identity = sample['data_info']
                 row = dict(step=step, lr=lr, dataset_index=index, scene=identity['scene_token'], frame=int(identity['frame_idx']),
                     continuous_gt_count=continuous_count,
@@ -177,8 +188,16 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                 display_range = min(50.0, conditioning_range)
                 for ax, image, title in zip(
                     all_axes[0], conditioning_images,
-                    ('Conditioning appearance', 'Conditioning semantics', 'Conditioning velocity'),
+                    (('Four manifest-ordered cameras',) if raw_cameras else
+                     ('Conditioning appearance', 'Conditioning semantics', 'Conditioning velocity')),
                 ):
+                    if raw_cameras:
+                        ax.imshow(image)
+                        ax.set_title(title)
+                        ax.axis('off')
+                        for unused in all_axes[0, 1:]:
+                            unused.axis('off')
+                        continue
                     image_h, image_w = image.shape[:2]
                     # Physical bounds describe the full map, centered on the vehicle.
                     crop_fraction = display_range / conditioning_range

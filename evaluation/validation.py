@@ -101,6 +101,10 @@ def plot_ppp_prediction(sample, fields, points, coordinate_range, title, gamma=0
     from matplotlib.colors import Normalize
     from radargen.visualization import plot_radargen_prediction
 
+    if 'camera_images' in sample:
+        from radargen.cam2radar.visualization import plot_camera_radar_prediction
+        return plot_camera_radar_prediction(sample, fields, points, title=title, gamma=gamma)
+
     if not np.isfinite(gamma) or gamma <= 0:
         raise ValueError('plot_gamma must be finite and positive')
     from radargen.ppp_targets.continuous import sample_detections, display_grids
@@ -158,6 +162,7 @@ def plot_ppp_prediction(sample, fields, points, coordinate_range, title, gamma=0
 class PPPPredictor:
     def __init__(self, model_config, config, device):
         from radargen.inference.ppp_pipeline import RadarGenPPPPipeline
+        self.raw_cameras = model_config.model.model == 'Camera2Radar'
         self.seed = config['seed']
         self.pipeline = RadarGenPPPPipeline.from_config(
             model_config, checkpoint_path=config['checkpoint_path'],
@@ -170,8 +175,9 @@ class PPPPredictor:
 
     def predict(self, sample, conditions):
         from radargen.ppp.sampling import ppp_cell_masses
-        fields = self.pipeline.predict_fields(*(sample[k] for k in
-            ('bev_color_map', 'bev_seg_map', 'bev_velocity_map')))
+        fields = (self.pipeline.predict_camera_fields(sample) if self.raw_cameras else
+                  self.pipeline.predict_fields(*(sample[k] for k in
+                      ('bev_color_map', 'bev_seg_map', 'bev_velocity_map'))))
         points = self.pipeline.sample_fields(fields)
         output = dict(cell_mass_grid=ppp_cell_masses(fields['log_intensity']).numpy(),
                       rcs=fields['rcs_raw'].double().cpu().numpy() ** 3,
@@ -344,6 +350,12 @@ def _evaluate_samples(dataset, predictor, config, device, directory, provenance,
                     or (not row['plot'] and writer is None)):
                 raise ValueError('Saved records or plots do not match the selected inventory')
     write_reports(directory, rows, provenance, device)
+    camera_dataset = None
+    if getattr(predictor, 'raw_cameras', False):
+        from radargen.cam2radar.dataset import CameraRadarDataset
+        camera_dataset = CameraRadarDataset.from_records(
+            [dict(expected=e) for _, e, _, _ in dataset.frame_index],
+            config.get('raw_dataset_dir', dataset.adapter.trucksc.dataroot), dataset.normalization)
     warmed_up = False
     try:
         with records.open('a' if resume else 'x') as stream, torch.inference_mode():
@@ -362,7 +374,8 @@ def _evaluate_samples(dataset, predictor, config, device, directory, provenance,
                 if gt.shape[1] != 4 or not np.isfinite(gt).all() or not (np.abs(gt[:, :2]) < dataset.point_limit).all():
                     raise ValueError(f'Invalid continuous targets: {path}')
                 # PPP needs the exact training transform and continuous targets; RadarGen uses raw conditioning.
-                sample = dataset[selected_indices[index]] if config['model'] == 'ppp' else None
+                sample = ((camera_dataset or dataset)[selected_indices[index]]
+                          if config['model'] == 'ppp' else None)
                 # Warm up once per invocation, including a resumed partial run.
                 # Restore RNG state so warm-up does not change evaluated predictions.
                 if not warmed_up:
@@ -493,6 +506,14 @@ def run_validation(config, output_dir=None, max_samples=None, *, resume=False):
         raise ValueError('max_samples must be a positive integer or null')
     selected_indices = select_keyframe_indices(dataset.frame_index, limit, config.get('selection_seed', 42))
     count = len(selected_indices)
+    if config.get('reference_validation_records'):
+        reference_rows = [json.loads(line) for line in
+                          Path(config['reference_validation_records']).read_text().splitlines()]
+        reference_ids = [(r['scene'], r['frame']) for r in reference_rows]
+        selected_ids = [(dataset.frame_index[i][1]['scene_token'],
+                         dataset.frame_index[i][1]['frame_index']) for i in selected_indices]
+        if reference_ids != selected_ids:
+            raise ValueError('Selected validation identities differ from the recorded benchmark')
     LOG.info('Selected %d annotated keyframes from %d frame pairs', count, len(dataset))
     device = torch.device(config.get('device', 'cuda'))
     if device.type == 'cuda' and not torch.cuda.is_available():

@@ -169,3 +169,22 @@ Tests exercise spatial reconstruction and gradients, RGB feature extraction,
 loss links, condition dropout, deterministic prediction, training/checkpoint
 resume, and inference without latent/text assets. Substitute backbones keep the
 suite small; pretrained weights are not downloaded.
+
+## Final 110-epoch run: 50-sample validation
+
+Run `2525026_PPP_train_dinov3_cont_step110` completed at
+`epoch_110_step_10670.pth`. Its validation configuration is
+`evaluation/configs/PPP_validation_dinov3_2525026.yaml`, using the exact training
+architecture config and the established 50 annotated validation keyframes
+(selection seed 42). It checks scene/frame identities against the recorded
+`2455164_PPP_validation_dinov3_2438929/metrics.jsonl` benchmark before inference.
+`tensorboard: false` preserves standalone PNG output for every selected sample,
+alongside the existing metric reports. This evaluates the conditioning-map
+DinoPPP model, not Camera2Radar.
+
+Submitted as Slurm job **2550360** with
+`jsc_jupiter/PPP_validation_dinov3_2525026.sbatch`: one full node, four GPUs,
+288 CPUs, 30-minute limit. Evaluation uses one inference process. Results go to
+`/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2550360_PPP_validation_dinov3_2525026/`,
+with PNGs under `plots/`. Configuration/reference-path checks and shell syntax
+passed; evaluation results are pending at submission.

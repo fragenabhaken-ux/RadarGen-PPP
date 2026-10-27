@@ -41,7 +41,12 @@ def initialize_dino_ppp_model(config, *, device="cpu", load_pretrained=True):
         kwargs["checkpoint_path"] = ""
         kwargs["pretrained"] = False
     kwargs.setdefault("grad_checkpointing", config.train.grad_checkpointing)
-    model = DinoPPP(**kwargs).to(device)
+    if getattr(config.model, 'model', 'DinoPPP') == 'Camera2Radar':
+        from radargen.cam2radar.model import Camera2Radar
+        kwargs.pop('pretrained', None)
+        model = Camera2Radar(**kwargs).to(device)
+    else:
+        model = DinoPPP(**kwargs).to(device)
     return PPPModelComponents(model, None, (), ())
 
 
