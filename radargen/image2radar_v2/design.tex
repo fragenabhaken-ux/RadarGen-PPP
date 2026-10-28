@@ -1,0 +1,134 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=25mm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage[hidelinks]{hyperref}
+\title{Image2Radar v2: Geometry-Aware Encoder--Decoder Design}
+\author{Design notes}
+\date{27 October 2026}
+\begin{document}
+\maketitle
+
+\section{Scope and status}
+This document records the proposed second Camera2Radar architecture. A first implementation now exists in this folder; radar accuracy and production hardware performance remain unvalidated. The central agreement is to connect individual camera patch tokens to BEV tokens through calibrated, local angular neighborhoods, while learning the association between image evidence and range. Numerical settings and several training choices remain open.
+
+\section{Architecture}
+A shared DINOv3 encoder processes each camera image separately, retaining its spatial patch tokens and existing encoder positional encoding. The selected starting point freezes the base encoder and trains shared LoRA adapters across cameras. The implementation starts with rank 16 on attention QKV/output and MLP input/output projections, matching the existing model; these remain tuning choices. Sharing weights does not imply concatenating images before encoding.
+
+Project each patch feature to the decoder width and refine it with a shared per-token residual MLP adapter:
+\begin{equation}
+ z_j=W_{\mathrm{in}}f_j,\qquad
+ \widehat z_j=z_j+W_2\,\mathrm{GELU}\!\left(W_1\,\mathrm{LN}(z_j)\right).
+\end{equation}
+The adapter preserves separate patch tokens and their ray coordinates. It performs no additional spatial attention or convolution. This replaces the expensive transformer neck used in the previous architecture. Camera features remain fixed during a decoder forward pass; each cross-attention layer has its own projections.
+
+The model predicts the radar BEV in one forward pass. It is not a diffusion model and uses no timestep conditioning or iterative denoising. The selected initialization is a learned Cartesian BEV query grid with positional encoding; random noise is not required. Increasing query resolution provides more spatial locations, whereas random initialization does not itself provide spatial detail.
+
+A pre-normalized decoder block contains local BEV self attention, local angular camera cross attention, and a per-token feed-forward network. Each sublayer has a residual connection. Use Cartesian positional information for BEV self attention and shifted or overlapping windows to communicate across window boundaries. Stage widths are initially 256, 128, 64, and 32. An initial coarse-stage width of 256, eight attention heads, and an MLP expansion of four are starting settings rather than validated optima.
+
+\subsection{Selected coarse-to-fine decoder}
+Fine spatial localization in all three heatmaps is a requirement. The selected strategy performs most transformer processing at coarse resolution and introduces fresh camera cross attention at finer BEV locations. The initial stage allocation is:
+\begin{center}
+\begin{tabular}{lll}
+\hline
+BEV resolution & Processing & Camera access \\
+\hline
+$64\times64$ & Two decoder blocks & Each block \\
+$128\times128$ & Two decoder blocks & Each block \\
+$256\times256$ & Angular cross attention and residual refinement & Fresh fine-grid queries \\
+$512\times512$ & Residual convolutions and output projection & No additional cross attention initially \\
+\hline
+\end{tabular}
+\end{center}
+
+Upsample feature maps by two between stages, for example with convolution and PixelShuffle. Recompute metric query positions and angular neighborhoods at each cross-attention resolution. Reduce feature widths as resolution increases; exact widths, fine-stage head counts, window sizes, and neighborhood widths must be selected from memory estimates. The fine-stage widths must remain compatible with their attention head counts. Use actual token gathering and query chunking to bound cross-attention working memory. Chunking alone does not reduce the number of attention operations or guarantee bounded total training activation memory; checkpointing may also be needed.
+
+This schedule is a proposed starting configuration, not an experimentally established optimum. Local attention and hierarchical processing are established cost-control principles; this exact combination for radar prediction requires evaluation. Coarse tokens can encode subcell structure in their channels, so coarse decoding is not intrinsically incapable of fine outputs. Higher-resolution cross attention is intended to improve direct access to spatially aligned camera evidence.
+
+\subsection{Three-channel output}
+The final shared convolutional feature trunk is followed by a linear $1\times1$ convolution producing $(B,3,512,512)$: log-intensity, RCS, and signed radial velocity (Doppler), following the existing target conventions. Verify normalization and validity masks against the existing data pipeline before implementation. No sigmoid or other output constraint is assumed. Loss weights must account for channel scales and target validity. Unlike the previous camera-plane readout, the decoder feature plane already has Cartesian BEV coordinates before upsampling.
+
+A higher-resolution camera feature branch remains an optional later experiment if DINO patch features prove insufficient for localization; it is not part of the selected initial design.
+
+\section{Strip--wedge correspondence}
+A narrow horizontal viewing direction from a camera defines a wedge in BEV and a strip of compatible image patches. A strip contains many separate tokens along image height; it is never assumed to be one pooled token. BEV cells at different ranges along the same direction can access the same candidate image tokens but produce different learned attention weights.
+
+For a BEV token center $p_i=(x_i,y_i)$ and camera horizontal position $c=(c_x,c_y)$, define
+\begin{align}
+ r_{ic} &= \lVert p_i-c\rVert_2,\\
+ \theta_{ic} &= \operatorname{atan2}(y_i-c_y,x_i-c_x).
+\end{align}
+For an undistorted pinhole image patch center $\widetilde u_j$, its reference-frame ray is
+\begin{equation}
+ d_{cj}=\frac{R_{\mathrm{cam}\to\mathrm{ref},c}K_c^{-1}\widetilde u_j}
+ {\lVert R_{\mathrm{cam}\to\mathrm{ref},c}K_c^{-1}\widetilde u_j\rVert_2}.
+\end{equation}
+Its azimuth and elevation are
+\begin{equation}
+ \theta_{cj}=\operatorname{atan2}(d_y,d_x),\qquad
+ \phi_{cj}=\operatorname{atan2}\left(d_z,\sqrt{d_x^2+d_y^2}\right).
+\end{equation}
+Intrinsics must reflect resizing and cropping. Distorted or non-pinhole images require the appropriate calibrated unprojection. Extrinsic conventions must be checked explicitly.
+
+Correspondence uses ray azimuth rather than literal image columns: pitch, roll, and lens geometry can produce slanted or curved strips. Coordinates are relative to each camera, not a single radar-centered polar origin. The BEV representation and final output can remain Cartesian; no polar feature-grid resampling is required. For a level pinhole camera, a vertical image line corresponds to a vertical plane through the camera, whose BEV trace is a radial line. With camera tilt, a literal vertical image line need not have constant reference-frame azimuth; calibrated rays give the correct association.
+
+Cells at a camera's horizontal origin need an explicit policy because their azimuth is undefined. This point singularity is distinct from a central area outside all cameras' angular coverage, and from occlusion by the vehicle itself. Such an uncovered area may be small, but its extent must be computed from the actual camera poses, fields of view, BEV extent, and any visibility masks rather than assumed. Report the fraction and spatial distribution of BEV cells with no eligible camera tokens. BEV self attention can provide context to these cells, without making them directly observed.
+
+\section{Local cross attention and positional information}
+For each BEV query, gather camera patches with compatible azimuth:
+\begin{equation}
+ \mathcal N(i)=\left\{(c,j):
+ |\operatorname{wrap}(\theta_{cj}-\theta_{ic})|\leq\Delta
+ \ \text{and camera coverage is valid}\right\}.
+\end{equation}
+The actual neighborhood should account for patch and BEV-cell angular extent, calibration tolerance, and camera coverage. Near-camera cells can subtend large angles. These details and $\Delta$ remain implementation choices. Preserve all compatible vertical patch positions; do not reject a query using an arbitrary single-height projection.
+
+Use overlapping neighborhoods, allowing neighboring strips and overlapping camera views to contribute. A front-facing query does not need direct access to rear-facing image strips. Encoder context and local BEV self attention provide additional spatial communication.
+
+The proposed simple baseline adds a learned per-head angular bias:
+\begin{equation}
+ s_{i,cj}^{(h)}=
+ \frac{(q_{ic}^{(h)})^\top k_{cj}^{(h)}}{\sqrt{d_h}}
+ +b_h\!\left(\operatorname{wrap}(\theta_{cj}-\theta_{ic})\right),
+ \qquad(c,j)\in\mathcal N(i).
+\end{equation}
+Queries are conditioned on camera-relative range, while keys retain elevation information. Use separate learned projections or embeddings for range and elevation: they are not interchangeable coordinates. Normalize attention over eligible keys and combine their values. The implementation adds a range MLP to each camera-conditioned query and normalizes jointly across eligible keys from all cameras. Elevation is added to camera features before layer-specific key/value projections. A two-layer per-head bias MLP encodes relative azimuth. Sorted periodic ray lookup gathers at most 256 candidates per camera before applying a three-degree angular mask; this explicit cap approximates the full strip and must be tuned with the radius. Queries with no eligible camera keys need a defined fallback, such as a zero cross-attention update.
+
+\paragraph{Locality versus positional encoding.}
+Gathering specifies which tokens communicate; positional information specifies their geometry. Local coordinates $\delta\theta=\operatorname{wrap}(\theta-\theta_{\mathrm{center}})$ can be reused around the vehicle. A global strip-index embedding is not required. Computational savings require actual gathering, grouped attention, or sparse kernels; a dense masked attention matrix alone does not provide them.
+
+\paragraph{Angular RoPE alternative.}
+Rotate query and key channel pairs using their camera-relative azimuth:
+\begin{equation}
+ \bigl(R(\omega\theta_i)q_i\bigr)^\top
+ \bigl(R(\omega\theta_j)k_j\bigr)
+ =q_i^\top R\!\left(\omega(\theta_j-\theta_i)\right)k_j.
+\end{equation}
+This exposes relative angle but neither enforces locality nor guarantees larger scores for nearby directions. Subtracting the same neighborhood center from both angles cancels in their difference, away from wrapping issues. Integer angular frequencies give exact $2\pi$ periodicity; standard sequence-RoPE frequencies do not generally do so. Angular RoPE is an ablation candidate, not a settled requirement. The proposed initial baseline uses the simpler relative angular bias.
+
+\section{Learning range without explicit depth}
+Calibration supplies angular association without requiring a predicted depth map. Exact image-to-3D point correspondence would additionally require depth or a geometric assumption. The model instead learns which image evidence supports each query's range, using patch content, elevation, encoder context, and radar supervision.
+
+The horizon and ground-contact location provide strong cues. On a flat ground plane, a camera at height $h$ and a downward ray angle $\alpha$ give $r=h/\tan\alpha$. This motivates preserving vertical information, but does not establish that metric depth is trivial in all scenes: slopes, occlusion, and near-horizon sensitivity remain relevant. No explicit depth head, fixed ground-plane row-to-range mapping, or height collapse is required by this design.
+
+\section{Implementation decisions and evaluation}
+The default implementation has 7,475,047 trainable parameters and 29,061,991 total parameters, measured with the actual DINOv3-S backbone. This includes shared rank-16 LoRA, the learned query grid, and all decoder/output components. Parameter sharing avoids a multiplier for the four cameras. Native-resolution GPU performance remains to be measured.
+
+Before implementation, verify metric conventions, target normalization and losses, LoRA configuration, adapter depth, per-stage decoder dimensions, local self-attention windows, angular neighborhood width, and camera-query construction. Validate the proposed stage resolutions and block allocation against memory and localization requirements.
+
+Keep decoder capacity and training comparable when testing:
+\begin{enumerate}
+ \item Angular gathering with range/elevation embeddings but no additional angular PE.
+ \item The same model with relative angular bias.
+ \item The same model with angular RoPE instead of that bias.
+\end{enumerate}
+Also vary neighborhood width and check strip boundaries, overlapping views, camera coverage, coordinate transforms, near-camera behavior, and no-key queries. Measure radar prediction quality, fine spatial localization, memory, and runtime. Compare the selected multiscale schedule against coarse-only upsampling and, if resources permit, a higher-resolution single-scale decoder. These experiments distinguish the effect of locality from the positional mechanism.
+
+\section{Academic context}
+Swin Transformer supports local attention with relative position bias and communication across windows~\cite{swin}; its evidence concerns image self attention. Cross-View Transformers supports calibration-aware cross attention and learning image-to-BEV correspondence without an explicit depth prediction~\cite{cvt}. Epipolar Attention Field Transformers provides related precedent for geometrically constrained image-to-BEV attention~\cite{eaformer}. These works motivate ingredients; they do not validate this exact angular-strip design for one-shot radar prediction.
+
+\begin{thebibliography}{9}
+\bibitem{swin} Liu et al. \emph{Swin Transformer: Hierarchical Vision Transformer using Shifted Windows}. ICCV, 2021. \url{https://arxiv.org/abs/2103.14030}.
+\bibitem{cvt} Zhou and Kr\"ahenb\"uhl. \emph{Cross-view Transformers for real-time Map-view Semantic Segmentation}. CVPR, 2022. \url{https://arxiv.org/abs/2205.02833}.
+\bibitem{eaformer} \emph{Epipolar Attention Field Transformers for Bird's Eye View Semantic Segmentation}. 2024. \url{https://arxiv.org/abs/2412.01595}.
+\end{thebibliography}
+\end{document}

@@ -162,7 +162,7 @@ def plot_ppp_prediction(sample, fields, points, coordinate_range, title, gamma=0
 class PPPPredictor:
     def __init__(self, model_config, config, device):
         from radargen.inference.ppp_pipeline import RadarGenPPPPipeline
-        self.raw_cameras = model_config.model.model == 'Camera2Radar'
+        self.raw_cameras = model_config.model.model in ('Camera2Radar', 'Image2RadarV2')
         self.seed = config['seed']
         self.pipeline = RadarGenPPPPipeline.from_config(
             model_config, checkpoint_path=config['checkpoint_path'],

@@ -44,7 +44,7 @@ def validate_ppp_config(config: SanaConfig) -> None:
         bounds = [data.get(f"{prefix}_{suffix}") for suffix in ("min", "max")]
         require(all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in bounds), f"{prefix} bounds must be finite numbers")
         require(bounds[0] < bounds[1], f"{prefix}_min must be less than {prefix}_max")
-    direct = config.model.model in ("DinoPPP", "Camera2Radar")
+    direct = config.model.model in ("DinoPPP", "Camera2Radar", "Image2RadarV2")
     require(direct or config.model.model == "RadarGenPPP_600M_P1_D28", "Unknown PPP model")
     require(config.data.image_size == config.model.image_size == 512, "PPP data/model image_size must be 512")
     model = config.model.extra
@@ -144,8 +144,8 @@ def training_microbatch(model, condition_encoder, batch, text_provider, ppp_loss
     """
     import random
     with accelerator.autocast():
-        direct = config.model.model in ('DinoPPP', 'Camera2Radar')
-        if config.model.model == 'Camera2Radar':
+        direct = config.model.model in ('DinoPPP', 'Camera2Radar', 'Image2RadarV2')
+        if config.model.model in ('Camera2Radar', 'Image2RadarV2'):
             decoded = model(*(batch[k] for k in
                 ('camera_images', 'camera_intrinsics', 'reference_to_camera')))
         else:
@@ -224,7 +224,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     from radargen.training.ppp_checkpoint import (save_ppp_checkpoint, load_ppp_checkpoint,
                                                 capture_rng_state, restore_rng_state)
     config = copy.deepcopy(config)
-    direct = config.model.model in ('DinoPPP', 'Camera2Radar')
+    direct = config.model.model in ('DinoPPP', 'Camera2Radar', 'Image2RadarV2')
     if config.train.auto_lr and config.train.auto_lr.get('rule') == 'none':
         config.train.auto_lr = {}
     sweep = config.train.extra.get('lr_range_test', False)
@@ -284,7 +284,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     startup_log("dataset construction begin", injected=dataset is not None)
     if dataset is None:
         from radargen.training.radargen_ppp_dataset import build_radargen_ppp_dataset_from_config
-        if config.model.model == 'Camera2Radar':
+        if config.model.model in ('Camera2Radar', 'Image2RadarV2'):
             from radargen.cam2radar.dataset import CameraRadarDataset
             dataset = CameraRadarDataset(config.data.ppp_manifest_path,
                 config.data.extra.get('raw_dataset_dir', config.data.dataset_dir))
@@ -464,7 +464,10 @@ def _run_training(config, options, *, components, dataset, text_provider, output
             logger.info('PPP checkpoint saved: %s; progress=%s', last_saved, progress)
         accelerator.wait_for_everyone()
 
-    prediction_interval = config.train.extra.get('prediction_interval', 0)
+    prediction_override = getattr(options, 'prediction_every', None)
+    if prediction_override is not None and prediction_override < 1:
+        raise ValueError('--prediction-every must be positive')
+    prediction_interval = prediction_override or config.train.extra.get('prediction_interval', 0)
     last_prediction = None
     last_used_lr = optimizer.param_groups[0]['lr']
 
@@ -481,8 +484,9 @@ def _run_training(config, options, *, components, dataset, text_provider, output
             error = None
             if accelerator.is_main_process:
                 try:
-                    indices = config.train.extra.get('prediction_indices', [0])
-                    if config.train.extra.get('prediction_random_sample', False):
+                    indices = (config.train.extra.get('final_prediction_indices', [0]) if prediction_override
+                               else config.train.extra.get('prediction_indices', [0]))
+                    if not prediction_override and config.train.extra.get('prediction_random_sample', False):
                         import random
                         # Separate RNG: selecting a visualization must not change training randomness.
                         indices = [random.Random(config.train.seed + progress['global_step']).randrange(len(dataset))]
@@ -712,7 +716,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
             timing_samples[0][0])
     predict()
     final_indices = config.train.extra.get('final_prediction_indices')
-    if config.model.model == 'Camera2Radar' and final_indices:
+    if config.model.model in ('Camera2Radar', 'Image2RadarV2') and final_indices:
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
             from radargen.cam2radar.visualization import save_final_predictions
@@ -765,6 +769,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, add_help=False)
     parser.add_argument('--validate-only', action='store_true')
+    parser.add_argument('--prediction-every', type=int, help='Override visualization interval without changing the resume contract; export all final_prediction_indices')
     parser.add_argument('--max-updates', type=int, help='Stop after this many optimizer updates in this invocation')
     parser.add_argument('--smoke-check', action='store_true', help='Verify updates and checkpoint mutation/restoration (one GPU)')
     parser.add_argument('--init-from', help='Load PPP model weights only; start fresh optimizer, scheduler and progress')

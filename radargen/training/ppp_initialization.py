@@ -41,10 +41,17 @@ def initialize_dino_ppp_model(config, *, device="cpu", load_pretrained=True):
         kwargs["checkpoint_path"] = ""
         kwargs["pretrained"] = False
     kwargs.setdefault("grad_checkpointing", config.train.grad_checkpointing)
-    if getattr(config.model, 'model', 'DinoPPP') == 'Camera2Radar':
+    if getattr(config.model, 'model', 'DinoPPP') in ('Camera2Radar', 'Image2RadarV2'):
         from radargen.cam2radar.model import Camera2Radar
         kwargs.pop('pretrained', None)
-        model = Camera2Radar(**kwargs).to(device)
+        if config.model.model == 'Image2RadarV2':
+            from radargen.image2radar_v2 import Image2RadarV2
+            kwargs.setdefault('coordinate_range', config.data.extra['coordinate_range'])
+            if kwargs['coordinate_range'] != config.data.extra['coordinate_range']:
+                raise ValueError('Model and target coordinate ranges must match')
+            model = Image2RadarV2(**kwargs).to(device)
+        else:
+            model = Camera2Radar(**kwargs).to(device)
     else:
         model = DinoPPP(**kwargs).to(device)
     return PPPModelComponents(model, None, (), ())

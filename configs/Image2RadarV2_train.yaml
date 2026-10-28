@@ -1,0 +1,107 @@
+# Initial v2 configuration. Batch size requires a dedicated hardware probe.
+data:
+  dataset_dir: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
+  ppp_data_dir: /e/scratch/nxtaim-1/public/truckscenes/RadarGen_preprocessed
+  ppp_manifest_path: output/ppp_manifests/truckscenes_train.json
+  image_size: 512
+  load_text_feat: false
+  load_vae_feat: false
+  type: RadarGenPPPDatasetWrapper
+  sort_dataset: false
+  extra:
+    dataset_name: truckscenes
+    eval_split: train
+    dataset_version: v1.2-trainval
+    ppp_scene_tokens: null
+    ppp_processing_signature: 22b8e2aa32ac33f9ebd50fda28a5e1fde16df5377c85b179f4b6a191dd6ffad6
+    camera_freq: 10.0
+    camera_views:
+    - CAMERA_RIGHT_FRONT
+    - CAMERA_LEFT_FRONT
+    - CAMERA_RIGHT_BACK
+    - CAMERA_LEFT_BACK
+    coordinate_range: 50.0
+    rcs_min: -20.0
+    rcs_max: 66.0
+    doppler_min: -120.0
+    doppler_max: 120.0
+    raw_dataset_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/cam2radar_raw
+model:
+  model: Image2RadarV2
+  image_size: 512
+  mixed_precision: bf16
+  resume_from: null
+  extra:
+    model_name: vit_small_patch16_dinov3
+    checkpoint_path: /e/project1/nxtaim-1/huber7/pretrained/vit_small_patch16_dinov3.lvd1689m/model.safetensors
+    frozen_base: true
+    use_lora: true
+    lora_r: 16
+    lora_alpha: 32.0
+    widths: [256, 128, 64, 32]
+    depths: [2, 2]
+    heads: [8, 8, 4]
+    query_size: 64
+    output_size: 512
+    coordinate_range: 50.0
+    window_size: 8
+    angular_radius_degrees: 3.0
+    max_keys: 256
+    query_chunk_size: 128
+train:
+  num_workers: 2
+  seed: 42
+  train_batch_size: 1
+  num_epochs: 110
+  gradient_accumulation_steps: 1
+  grad_checkpointing: true
+  gradient_clip: 1.0
+  optimizer:
+    type: AdamW
+    lr: 0.001
+    betas:
+    - 0.9
+    - 0.999
+    eps: 1.0e-08
+    weight_decay: 0.01
+  lr_schedule: epoch_step
+  lr_schedule_args:
+    num_warmup_steps: 200
+    switch_epochs:
+    - 34
+    - 68
+    - 102
+    factors:
+    - 0.1
+    - 0.05
+    - 0.01
+  auto_lr:
+    rule: none
+  log_interval: 20
+  save_model_epochs: 1
+  save_model_steps: 1000
+  work_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/Image2RadarV2
+  online_metric: false
+  extra:
+    ppp_weight: 1.0
+    rcs_weight: 1.0
+    doppler_weight: 1.0
+    normalize_ppp_by_gt_count: true
+    velocity_loss_mode: signed_l1
+    conditioning_dropout: 0.0
+    overfit_diagnostic_interval: 0
+    lr_range_test: false
+    persistent_workers: true
+    log_step_timing: true
+    keep_last_checkpoints: 5
+    prediction_interval: 0
+    final_prediction_indices:
+    - 0
+    - 1
+    prediction_random_sample: true
+work_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/Image2RadarV2
+name: Image2RadarV2
+tracker_project_name: train_radargen_ppp
+report_to: none
+resume_from: null
+tensorboard: true

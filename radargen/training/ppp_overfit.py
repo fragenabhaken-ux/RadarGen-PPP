@@ -107,7 +107,7 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                 sample = dataset[index]
                 batch = send_to_device(collate_ppp_samples([sample]), accelerator.device)
                 with accelerator.autocast():
-                    if config.model.model == 'Camera2Radar':
+                    if config.model.model in ('Camera2Radar', 'Image2RadarV2'):
                         decoded = model(*(batch[k] for k in
                             ('camera_images', 'camera_intrinsics', 'reference_to_camera')))
                     else:
@@ -326,12 +326,11 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                     y=1.01,
                 )
                 fig.tight_layout()
-                if writer is None:
-                    fig.savefig(
-                        directory / f'step_{step:06d}_sample_{index}.png',
-                        dpi=110,
-                        bbox_inches='tight',
-                    )
+                fig.savefig(
+                    directory / f'step_{step:06d}_sample_{index}.png',
+                    dpi=110,
+                    bbox_inches='tight',
+                )
                 if writer is not None:
                     from radargen.training.tensorboard_logging import log_scalars
                     prefix = 'overfit' if indices is None else 'prediction'

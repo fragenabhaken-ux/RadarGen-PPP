@@ -40,7 +40,7 @@ class RadarGenPPPPipeline:
         fresh.model.resume_from = None
         fresh.load_from = None
         fresh.train.grad_checkpointing = False
-        if config.model.model in ('DinoPPP', 'Camera2Radar'):
+        if config.model.model in ('DinoPPP', 'Camera2Radar', 'Image2RadarV2'):
             from radargen.training.ppp_initialization import initialize_dino_ppp_model
 
             fresh.model.load_from = None
