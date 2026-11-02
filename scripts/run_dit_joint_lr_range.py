@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Full-data four-GPU memory probe followed by a fresh 1024px DiT LR sweep."""
+"""Full-data four-GPU memory probe followed by a fresh DiT LR sweep."""
 import argparse
 import copy
 import json
@@ -83,7 +83,7 @@ def main():
     path = directory/'config.yaml'
     path.write_text(yaml.safe_dump(config, sort_keys=False))
     summary = dict(selected_batch_per_gpu=selected, world_size=4, effective_batch=selected*4,
-                   output_resolution=1024, memory_headroom_fraction=0.15, attempts=attempts,
+                   output_resolution=base['model']['image_size'] * base['model'].get('extra', {}).get('output_scale', 1), memory_headroom_fraction=0.15, attempts=attempts,
                    note='Five successful DDP updates verified all ranks; memory fields report rank zero.')
     (root/'batch_probe_summary.json').write_text(json.dumps(summary, indent=2)+'\n')
     print('Starting fresh 600-update LR sweep, 1e-7 -> 1e-2; '+json.dumps(summary), flush=True)

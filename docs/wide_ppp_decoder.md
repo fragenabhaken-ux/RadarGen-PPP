@@ -357,3 +357,37 @@ time budget set to 1.5 hours.
 The LR-range job **2657324** was canceled at the user's request after 1m13s.
 The LR-range configuration remains prepared; it is deferred until the new
 overfit results have been reviewed and is not chained automatically.
+
+
+### Selected 512 decoder: LR range job 2658252
+
+After both 1000-update overfits completed, the 512 head was selected for
+efficiency (41m29 versus 1h00m22; adjusted mean total losses 4.8055 versus
+4.8416). Job **2658252**, submitted with
+`jsc_jupiter/PPP_LR_range_dit_joint_dino_512.sbatch`, uses the full continuous
+training split and `configs/PPP_LR_range_dit_joint_dino_512.yaml`.
+The four-GPU develbooster allocation first probes batch sizes 8, 4, then 2
+per GPU for five complete DDP updates, selecting the first with 15% memory
+headroom. A fresh backbone-transfer/head initialization then sweeps
+1e-7 to 1e-2 over 600 updates, without accumulation or automatic LR scaling.
+The backbone source is the original finetuned continuous-target checkpoint;
+overfit weights and probe updates are not carried into the sweep.
+Memory, timing, batch selection, and LR-loss plots are written to the job's
+scratch work directory. Allocation limit is 1h50; sweep budget is 1.25h.
+
+
+Job 2658252 was canceled at the user's request; memory probes were removed
+from the 512 submission script. Replacement job **2658292** runs the sweep
+directly on develbooster with batch **16 per GPU**, four GPUs, effective
+batch **64**, accumulation 1. The estimate uses the completed 512 overfit:
+10.741 GiB fixed allocation + 4.145 GiB per sample, yielding approximately
+77.05 GiB allocated at batch 16 on 95 GiB GPUs. This is an extrapolation,
+not a measured batch-16 peak. Memory monitoring remains enabled during the
+actual LR sweep; there are no preliminary memory tests. The LR range is
+unchanged (600 updates, 1e-7 to 1e-2).
+
+User increased the memory target to approximately 90 GiB. Job 2658292 was canceled and replaced by **2658301** on develbooster, with batch **19/GPU**, effective batch **76**. The same linear estimate gives **89.49 GiB allocated/GPU**; actual DDP/workspace overhead is not measured at this batch. No preliminary memory tests are run; memory logging remains enabled.
+
+At the user's request, batch was increased to **20/GPU** (effective **80**), estimated allocation **93.63 GiB/GPU**. Job 2658301 was canceled and replaced by **2658303**, using the same develbooster LR sweep without preliminary memory tests.
+
+Final batch selection: **19/GPU**, effective batch **76**, estimated allocation **89.49 GiB/GPU**. At the user's request job 2658303 was canceled and replaced by **2658305** on develbooster. The direct 600-update LR sweep and memory logging remain enabled, without preliminary memory tests.
