@@ -29,6 +29,18 @@ def initialize_dino_ppp_model(config, *, device="cpu", load_pretrained=True):
     feature fusion and prediction of three raw radar fields. There is no
     conditioning autoencoder or text encoder.
     """
+    if getattr(config.model, "model", "DinoPPP") == "NeckPPP":
+        from radargen.models.neck_ppp import NeckPPP
+        kwargs = dict(config.model.extra or {})
+        kwargs.setdefault("grad_checkpointing", config.train.grad_checkpointing)
+        return PPPModelComponents(NeckPPP(**kwargs).to(device), None, (), ())
+
+    if getattr(config.model, "model", "DinoPPP") == "DiTV2":
+        from radargen.models.dit_v2 import DiTV2
+        kwargs = dict(config.model.extra or {})
+        kwargs.setdefault("grad_checkpointing", config.train.grad_checkpointing)
+        return PPPModelComponents(DiTV2(**kwargs).to(device), None, (), ())
+
     from radargen.models.dino_ppp import DinoPPP
 
     kwargs = dict(config.model.extra or {})

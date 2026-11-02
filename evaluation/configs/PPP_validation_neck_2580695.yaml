@@ -1,0 +1,14 @@
+# Final 75-epoch NeckPPP checkpoint; exact established 50 frames; PNGs enabled.
+dataset_config: configs/PPP_train_neck.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+max_samples: 50
+plot_dpi: 110
+plot_gamma: 0.2
+model: ppp
+model_config: configs/PPP_train_neck.yaml
+checkpoint_path: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2580695_PPP_train_neck/checkpoints/epoch_75_step_9825.pth
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/PPP_validation_neck_2580695
+tensorboard: false
+reference_validation_records: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2455164_PPP_validation_dinov3_2438929/metrics.jsonl

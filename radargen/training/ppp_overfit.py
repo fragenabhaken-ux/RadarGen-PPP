@@ -30,15 +30,17 @@ def sample_ppp_thinning(cell_mass, rng):
     keep = rng.random(n_proposals) < (lam[yi, xi] / lam_max)
     return x[keep], y[keep], xi[keep], yi[keep]
 
-def summarize_fields(fields, point_mask, rcs_target, doppler_target, bounds, *, detections=None, point_limit=None):
+def summarize_fields(fields, point_mask, rcs_target, doppler_target, bounds, *, detections=None, point_limit=None, mark_link="cubic"):
     """Physical diagnostics on a single sample; inputs are detached NumPy arrays."""
+    if mark_link not in ("cubic", "identity"):
+        raise ValueError("Unknown mark link")
     f = np.asarray(fields, dtype=np.float64)
     mask = np.asarray(point_mask, dtype=bool)
     if f.shape != (3, *mask.shape) or not np.isfinite(f).all():
         raise ValueError('Invalid diagnostic fields or target mask')
     with np.errstate(over='raise', invalid='raise'):
         mass = np.exp(f[0]) / mask.size
-        marks = f[1:] ** 3
+        marks = f[1:] ** 3 if mark_link == "cubic" else f[1:]
     if not np.isfinite(mass).all() or not np.isfinite(marks).all():
         raise ValueError('Nonfinite diagnostic predictions')
     if detections is None:
@@ -69,7 +71,7 @@ def summarize_fields(fields, point_mask, rcs_target, doppler_target, bounds, *, 
     return result, mass, marks
 
 
-def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, accelerator, step, *, indices=None, lr=None, writer=None):
+def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, accelerator, step, *, indices=None, lr=None, writer=None, png_only=False):
     import h5py
     import torch
     from radargen.training.ppp_collate import collate_ppp_samples
@@ -112,7 +114,7 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                             ('camera_images', 'camera_intrinsics', 'reference_to_camera')))
                     else:
                         conditions = [batch[k] for k in ('bev_color_map','bev_seg_map','bev_velocity_map')]
-                        if config.model.model == 'DinoPPP':
+                        if config.model.model in ('DinoPPP', 'DiTV2', 'NeckPPP'):
                             decoded = model(*conditions)
                         else:
                             conditions = encoder(conditions)
@@ -127,7 +129,8 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                 counts, rcs, doppler = display_grids(detections, fields.shape[-2:], limit)
                 mask = counts > 0
                 stats, mass, marks = summarize_fields(fields, mask, rcs, doppler, bounds,
-                                                       detections=detections, point_limit=limit)
+                                                       detections=detections, point_limit=limit,
+                                                       mark_link=config.train.extra.get("mark_link", "cubic"))
                 h, w = mask.shape
                 gt_x = (detections[:, 0] + limit) / (2 * limit) * w
                 gt_y = (limit - detections[:, 1]) / (2 * limit) * h
@@ -160,7 +163,7 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                     count_abs_error_continuous=abs(stats['expected_count']-continuous_count),
                     **stats, **{key: float(value.item()) for key,value in losses.items()})
                 rows.append(row)
-                if indices is None:
+                if indices is None and not png_only:
                     np.savez_compressed(directory/f'step_{step:06d}_sample_{index}.npz',
                         fields=fields, detections=detections, point_limit=limit, detection_counts=counts)
 
@@ -326,11 +329,12 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                     y=1.01,
                 )
                 fig.tight_layout()
-                fig.savefig(
-                    directory / f'step_{step:06d}_sample_{index}.png',
-                    dpi=110,
-                    bbox_inches='tight',
-                )
+                if writer is None:
+                    fig.savefig(
+                        directory / f'step_{step:06d}_sample_{index}.png',
+                        dpi=110,
+                        bbox_inches='tight',
+                    )
                 if writer is not None:
                     from radargen.training.tensorboard_logging import log_scalars
                     prefix = 'overfit' if indices is None else 'prediction'
@@ -339,9 +343,10 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                     writer.flush()
                 plt.close(fig)
 
-        with (directory/'metrics.jsonl').open('a') as stream:
-            for row in rows:
-                stream.write(json.dumps(row, allow_nan=False)+'\n')
+        if not png_only and not config.train.extra.get('prediction_png_only', False):
+            with (directory/'metrics.jsonl').open('a') as stream:
+                for row in rows:
+                    stream.write(json.dumps(row, allow_nan=False)+'\n')
         if not rows:
             return  # No selected samples; finally still restores RNG/modes.
         mean = {key: float(np.mean([row[key] for row in rows])) for key in

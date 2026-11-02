@@ -44,13 +44,21 @@ def validate_ppp_config(config: SanaConfig) -> None:
         bounds = [data.get(f"{prefix}_{suffix}") for suffix in ("min", "max")]
         require(all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in bounds), f"{prefix} bounds must be finite numbers")
         require(bounds[0] < bounds[1], f"{prefix}_min must be less than {prefix}_max")
-    direct = config.model.model in ("DinoPPP", "Camera2Radar", "Image2RadarV2")
+    direct = config.model.model in ("DinoPPP", "Camera2Radar", "Image2RadarV2", "DiTV2", "NeckPPP")
     require(direct or config.model.model == "RadarGenPPP_600M_P1_D28", "Unknown PPP model")
     require(config.data.image_size == config.model.image_size == 512, "PPP data/model image_size must be 512")
     model = config.model.extra
     require(isinstance(model, dict), "model.extra must be a dictionary")
     require(config.model.mixed_precision == "bf16", "PPP mixed_precision must be bf16")
-    if direct:
+    if config.model.model == "DiTV2":
+        require(config.vae.vae_downsample_rate == 8, "DiTV2 requires factor eight")
+        require(not config.train.extra.get("freeze_decoder", False), "DiTV2 trains its decoder")
+        require(config.vae.vae_latent_dim == model.get("latent_channels", 64), "DiTV2 latent dimensions must agree")
+        require(config.train.extra.get("mark_link") == "identity", "DiTV2 requires identity marks")
+        require(config.train.extra.get("conditioning_dropout") == 0, "DiTV2 disables condition dropout")
+    elif config.model.model == "NeckPPP":
+        require(not config.train.extra.get("freeze_decoder", False), "NeckPPP trains its spatial prediction head")
+    elif direct:
         require(bool(model.get("checkpoint_path")), "model.extra.checkpoint_path must name the local DINOv3 weights")
         require(not config.train.extra.get("freeze_decoder", False), "DinoPPP trains its spatial prediction head")
     else:
@@ -113,7 +121,7 @@ def compute_ppp_losses(decoded, batch, ppp_loss, settings):
             raise ValueError('Packed batch size must match decoded fields')
         if settings['velocity_loss_mode'] != 'signed_l1':
             raise ValueError('Continuous targets currently require signed_l1')
-        raw = ContinuousPPPLoss(ppp_loss=ppp_loss)(
+        raw = ContinuousPPPLoss(ppp_loss=ppp_loss, mark_link=settings.get("mark_link", "cubic"))(
             decoded[:, :, 0], batch['detections'], batch['frame_indices'],
             point_limit=batch['point_limit'])
     else:
@@ -121,9 +129,9 @@ def compute_ppp_losses(decoded, batch, ppp_loss, settings):
         if any(t.shape != decoded[:, 0].shape for t in (mask, rcs, doppler)):
             raise ValueError('PPP targets must match decoded (B,1,H,W) fields')
         raw = dict(ppp=ppp_loss(decoded[:, 0], mask),
-                   rcs=masked_rcs_l1(decoded[:, 1], rcs, mask),
+                   rcs=masked_rcs_l1(decoded[:, 1], rcs, mask, mark_link=settings.get("mark_link", "cubic")),
                    doppler=masked_doppler_loss(decoded[:, 2], doppler, mask,
-                                               settings['velocity_loss_mode']))
+                                               settings['velocity_loss_mode'], mark_link=settings.get('mark_link', 'cubic')))
     weighted = {name: value * settings[f'{name}_weight'] for name, value in raw.items()}
     total = sum(weighted.values())
     if not total.isfinite():
@@ -144,7 +152,7 @@ def training_microbatch(model, condition_encoder, batch, text_provider, ppp_loss
     """
     import random
     with accelerator.autocast():
-        direct = config.model.model in ('DinoPPP', 'Camera2Radar', 'Image2RadarV2')
+        direct = config.model.model in ('DinoPPP', 'Camera2Radar', 'Image2RadarV2', 'DiTV2', 'NeckPPP')
         if config.model.model in ('Camera2Radar', 'Image2RadarV2'):
             decoded = model(*(batch[k] for k in
                 ('camera_images', 'camera_intrinsics', 'reference_to_camera')))
@@ -224,7 +232,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     from radargen.training.ppp_checkpoint import (save_ppp_checkpoint, load_ppp_checkpoint,
                                                 capture_rng_state, restore_rng_state)
     config = copy.deepcopy(config)
-    direct = config.model.model in ('DinoPPP', 'Camera2Radar', 'Image2RadarV2')
+    direct = config.model.model in ('DinoPPP', 'Camera2Radar', 'Image2RadarV2', 'DiTV2', 'NeckPPP')
     if config.train.auto_lr and config.train.auto_lr.get('rule') == 'none':
         config.train.auto_lr = {}
     sweep = config.train.extra.get('lr_range_test', False)
@@ -326,7 +334,8 @@ def _run_training(config, options, *, components, dataset, text_provider, output
         if max(subset_indices) >= len(dataset):
             raise ValueError('PPP subset index outside validated inventory')
         dataset = Subset(dataset, subset_indices)
-    diagnostic_interval = config.train.extra.get('overfit_diagnostic_interval', 0)
+    final_pngs_only = getattr(options, 'final_pngs_only', False)
+    diagnostic_interval = 0 if final_pngs_only else config.train.extra.get('overfit_diagnostic_interval', 0)
     if diagnostic_interval and accelerator.num_processes != 1:
         raise ValueError('WP8 overfit diagnostics currently require one GPU/process')
     if config.train.extra.get('log_step_timing', False):
@@ -422,7 +431,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
         accelerator.init_trackers(config.tracker_project_name)
     from radargen.training.tensorboard_logging import tensorboard_writer, log_scalars
     writer = output_stack.enter_context(tensorboard_writer(
-        config.work_dir, config.tensorboard and accelerator.is_main_process,
+        config.work_dir, config.tensorboard and accelerator.is_main_process and not final_pngs_only,
         purge_step=progress['global_step'] + 1 if resume else None))
     ppp_loss = PPPLoss(out_img_size=(512,512),
                        normalize_by_gt_count=config.train.extra['normalize_ppp_by_gt_count']).to(accelerator.device)
@@ -447,7 +456,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
 
     def save():
         nonlocal last_saved
-        if sweep:
+        if sweep or not config.train.extra.get("save_checkpoints", True):
             return
         accelerator.wait_for_everyone()
         rng = capture_rng_state(generator)
@@ -467,7 +476,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     prediction_override = getattr(options, 'prediction_every', None)
     if prediction_override is not None and prediction_override < 1:
         raise ValueError('--prediction-every must be positive')
-    prediction_interval = prediction_override or config.train.extra.get('prediction_interval', 0)
+    prediction_interval = 0 if final_pngs_only else (prediction_override or config.train.extra.get('prediction_interval', 0))
     last_prediction = None
     last_used_lr = optimizer.param_groups[0]['lr']
 
@@ -477,8 +486,10 @@ def _run_training(config, options, *, components, dataset, text_provider, output
             diagnose_overfit(accelerator.unwrap_model(model), encoder, dataset,
                 text_provider, ppp_loss, config, accelerator, progress['global_step'], writer=writer)
 
-    def predict():
+    def predict(*, final=False):
         nonlocal last_prediction
+        if config.train.extra.get("prediction_final_only", False) and not final:
+            return
         if prediction_interval and last_prediction != progress['global_step']:
             from radargen.training.ppp_overfit import diagnose_overfit
             error = None
@@ -681,7 +692,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
                             'max_data_wait_s=%.4f max_train_s=%.4f max_total_s=%.4f '
                             'max_worker_load_s=%.4f max_worker_collate_s=%.4f',
                             accelerator.num_processes, progress['global_step'], *mean_times, *max_times)
-                if progress['global_step'] % config.train.save_model_steps == 0 or stop:
+                if (not final_pngs_only and progress['global_step'] % config.train.save_model_steps == 0) or stop:
                     save()
                 if diagnostic_interval and (progress['global_step'] % diagnostic_interval == 0 or stop):
                     diagnose()
@@ -701,7 +712,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
                             epoch + 1, optimizer.param_groups[0]['lr'])
         progress.update(epoch=epoch+1, batch_in_epoch=0)
         sampler.set_start(0)
-        if config.train.save_model_epochs and (
+        if not final_pngs_only and config.train.save_model_epochs and (
                 (epoch+1) % config.train.save_model_epochs == 0 or epoch+1 == config.train.num_epochs):
             save()
     if log_step_timing and timing_samples:
@@ -714,7 +725,15 @@ def _run_training(config, options, *, components, dataset, text_provider, output
             accelerator.process_index, len(steady), len(timing_samples) - len(steady),
             wait / len(steady), compute / len(steady), wait / max(wait + compute, 1e-12),
             timing_samples[0][0])
-    predict()
+    predict(final=True)
+    if final_pngs_only:
+        accelerator.wait_for_everyone()
+        if accelerator.is_main_process:
+            from radargen.training.ppp_overfit import diagnose_overfit
+            diagnose_overfit(accelerator.unwrap_model(model), encoder, dataset,
+                text_provider, ppp_loss, config, accelerator, progress['global_step'],
+                indices=list(range(len(dataset))), png_only=True)
+        accelerator.wait_for_everyone()
     final_indices = config.train.extra.get('final_prediction_indices')
     if config.model.model in ('Camera2Radar', 'Image2RadarV2') and final_indices:
         accelerator.wait_for_everyone()
@@ -770,6 +789,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, add_help=False)
     parser.add_argument('--validate-only', action='store_true')
     parser.add_argument('--prediction-every', type=int, help='Override visualization interval without changing the resume contract; export all final_prediction_indices')
+    parser.add_argument('--final-pngs-only', action='store_true', help='Only render final subset PNGs; suppress periodic diagnostics, raw arrays, TensorBoard and intermediate checkpoints')
     parser.add_argument('--max-updates', type=int, help='Stop after this many optimizer updates in this invocation')
     parser.add_argument('--smoke-check', action='store_true', help='Verify updates and checkpoint mutation/restoration (one GPU)')
     parser.add_argument('--init-from', help='Load PPP model weights only; start fresh optimizer, scheduler and progress')

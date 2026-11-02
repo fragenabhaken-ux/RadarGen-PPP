@@ -28,7 +28,7 @@ def ppp_cell_masses(log_intensity):
 
 @torch.no_grad()
 def sample_ppp_grid(log_intensity, raw_rcs, raw_doppler, coordinate_range,
-                    generator=None):
+                    generator=None, *, mark_link="cubic"):
     """Return float64 (N,4) [x meters,y meters,RCS dBsm,Doppler m/s].
 
     Multiple events per cell are retained. A CPU generator is required so
@@ -43,7 +43,10 @@ def sample_ppp_grid(log_intensity, raw_rcs, raw_doppler, coordinate_range,
     rcs, doppler = _grid(raw_rcs, 'raw_rcs'), _grid(raw_doppler, 'raw_doppler')
     if rcs.shape != masses.shape or doppler.shape != masses.shape:
         raise ValueError('All scalar fields must have matching shapes')
-    rcs, doppler = rcs.pow(3), doppler.pow(3)
+    if mark_link not in ("cubic", "identity"):
+        raise ValueError("Unknown mark link")
+    if mark_link == "cubic":
+        rcs, doppler = rcs.pow(3), doppler.pow(3)
     if not torch.isfinite(rcs).all() or not torch.isfinite(doppler).all():
         raise ValueError('Physical marks are nonfinite after cubing')
     counts = torch.poisson(masses, generator=generator)

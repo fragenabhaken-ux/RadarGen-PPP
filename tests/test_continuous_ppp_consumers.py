@@ -98,4 +98,8 @@ class ContinuousConsumerTests(unittest.TestCase):
             self.assertTrue((output / 'step_000001_sample_0.npz').exists())
             events = EventAccumulator(str(Path(directory) / 'tensorboard')).Reload()
             self.assertEqual(events.Images('overfit/sample_0')[-1].step, 1)
-
+            diagnose_overfit(model, None, Dataset(), None, PPPLoss((2, 2)),
+                             config, accelerator, 2, indices=[0], png_only=True)
+            final_output = Path(directory) / 'prediction_images'
+            self.assertEqual([p.name for p in final_output.iterdir()],
+                             ['step_000002_sample_0.png'])

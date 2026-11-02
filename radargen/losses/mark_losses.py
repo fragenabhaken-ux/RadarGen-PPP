@@ -7,8 +7,10 @@ import torch
 from .ppp_loss import _require_finite, _validate_inputs
 
 
-def _physical_error(raw, target):
-    prediction = raw.float().pow(3)
+def _physical_error(raw, target, mark_link="cubic"):
+    if mark_link not in ("cubic", "identity"):
+        raise ValueError("Unknown mark link")
+    prediction = raw.float().pow(3) if mark_link == "cubic" else raw.float()
     _require_finite(prediction, "cubed physical prediction")
     error = prediction - target.float()
     _require_finite(error, "physical mark error")
@@ -24,11 +26,11 @@ def _masked_mean(error, point_mask):
     return loss
 
 
-def masked_rcs_l1(raw_rcs: torch.Tensor, rcs_target: torch.Tensor, point_mask: torch.Tensor) -> torch.Tensor:
+def masked_rcs_l1(raw_rcs: torch.Tensor, rcs_target: torch.Tensor, point_mask: torch.Tensor, *, mark_link="cubic") -> torch.Tensor:
     """Masked |raw_rcs**3 - target_dBsm|; zero targets remain valid marks."""
     _validate_inputs(raw_rcs, point_mask, rcs_target)
     with torch.autocast(device_type=raw_rcs.device.type, enabled=False):
-        return _masked_mean(_physical_error(raw_rcs, rcs_target), point_mask)
+        return _masked_mean(_physical_error(raw_rcs, rcs_target, mark_link), point_mask)
 
 
 def _period_tensor(period, prediction):
@@ -53,7 +55,7 @@ def _period_tensor(period, prediction):
 
 
 def masked_doppler_loss(raw_doppler: torch.Tensor, doppler_target: torch.Tensor,
-                        point_mask: torch.Tensor, mode: str, doppler_period=None) -> torch.Tensor:
+                        point_mask: torch.Tensor, mode: str, doppler_period=None, *, mark_link="cubic") -> torch.Tensor:
     """Masked cubed signed velocity error in m/s; periods must also be in m/s.
 
     signed_l1 uses absolute signed error. signed_circular uses shortest wrapped
@@ -64,7 +66,7 @@ def masked_doppler_loss(raw_doppler: torch.Tensor, doppler_target: torch.Tensor,
         raise ValueError("Doppler mode must be signed_l1 or signed_circular")
     _validate_inputs(raw_doppler, point_mask, doppler_target)
     with torch.autocast(device_type=raw_doppler.device.type, enabled=False):
-        error = _physical_error(raw_doppler, doppler_target)
+        error = _physical_error(raw_doppler, doppler_target, mark_link)
         if mode == "signed_circular":
             period = _period_tensor(doppler_period, raw_doppler)
             shifted = error + period / 2

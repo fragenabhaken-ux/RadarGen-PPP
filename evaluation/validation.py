@@ -179,9 +179,10 @@ class PPPPredictor:
                   self.pipeline.predict_fields(*(sample[k] for k in
                       ('bev_color_map', 'bev_seg_map', 'bev_velocity_map'))))
         points = self.pipeline.sample_fields(fields)
+        power = 1 if self.pipeline.mark_link == 'identity' else 3
         output = dict(cell_mass_grid=ppp_cell_masses(fields['log_intensity']).numpy(),
-                      rcs=fields['rcs_raw'].double().cpu().numpy() ** 3,
-                      doppler=fields['doppler_raw'].double().cpu().numpy() ** 3)
+                      rcs=fields['rcs_raw'].double().cpu().numpy() ** power,
+                      doppler=fields['doppler_raw'].double().cpu().numpy() ** power)
         return points, output
 
 
@@ -490,8 +491,18 @@ def run_validation(config, output_dir=None, max_samples=None, *, resume=False):
         data_config = pyrallis.load(SanaConfig, stream)
     data_config.data.extra['eval_split'] = 'val'
     data_config.data.extra['ppp_scene_tokens'] = None
-    # Validate every scene's completion/signature/identity, independent of training manifests.
-    dataset = validate_radargen_ppp_dataset_from_config(data_config)
+    # Validation has its own persistent index, independent of training manifests.
+    # The immutable dataset is scanned once; later launches check scene completion
+    # fingerprints and validate each selected HDF5 sample when it is loaded.
+    from radargen.training.ppp_manifest import dataset_contract
+    import hashlib
+    contract = dataset_contract(data_config)
+    index_key = hashlib.sha256(json.dumps(contract, sort_keys=True).encode()).hexdigest()
+    default_index = Path(__file__).resolve().parents[1] / 'output' / 'ppp_manifests' / f'validation_{index_key}.json'
+    index_path = Path(config.get('dataset_index_path') or default_index).expanduser()
+    dataset = validate_radargen_ppp_dataset_from_config(
+        data_config, index_path=index_path,
+        rebuild_index=config.get('rebuild_dataset_index', False))
     if not len(dataset):
         raise ValueError('No validation frame pairs available')
     with open(config['model_config']) as stream:

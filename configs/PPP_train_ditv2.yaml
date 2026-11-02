@@ -1,0 +1,85 @@
+data:
+  dataset_dir: /e/scratch/nxtaim-1/public/truckscenes/man-truckscenes
+  ppp_data_dir: /e/scratch/nxtaim-1/public/truckscenes/RadarGen_preprocessed
+  ppp_manifest_path: output/ppp_manifests/truckscenes_train.json
+  image_size: 512
+  load_text_feat: false
+  load_vae_feat: false
+  type: RadarGenPPPDatasetWrapper
+  sort_dataset: false
+  extra:
+    dataset_name: truckscenes
+    eval_split: train
+    dataset_version: v1.2-trainval
+    ppp_scene_tokens: null
+    ppp_processing_signature: 22b8e2aa32ac33f9ebd50fda28a5e1fde16df5377c85b179f4b6a191dd6ffad6
+    camera_freq: 10.0
+    camera_views:
+    - CAMERA_RIGHT_FRONT
+    - CAMERA_LEFT_FRONT
+    - CAMERA_RIGHT_BACK
+    - CAMERA_LEFT_BACK
+    coordinate_range: 50.0
+    rcs_min: -20.0
+    rcs_max: 66.0
+    doppler_min: -120.0
+    doppler_max: 120.0
+model:
+  model: DiTV2
+  image_size: 512
+  mixed_precision: bf16
+  resume_from: null
+  extra:
+    hidden_size: 1152
+    depth: 28
+    latent_channels: 64
+    head_dim: 32
+    mlp_ratio: 2.5
+  load_from: null
+train:
+  num_workers: 0
+  seed: 42
+  train_batch_size: 1
+  num_epochs: 6
+  gradient_accumulation_steps: 1
+  grad_checkpointing: true
+  gradient_clip: 1.0
+  optimizer:
+    type: AdamW
+    lr: 0.0001
+    betas:
+    - 0.9
+    - 0.999
+    weight_decay: 0.0
+  lr_schedule: constant
+  lr_schedule_args:
+    num_warmup_steps: 20
+  auto_lr:
+    rule: none
+  log_interval: 20
+  save_model_epochs: 1
+  save_model_steps: 1000
+  work_dir: output/ditv2_training
+  online_metric: false
+  extra:
+    ppp_weight: 1.0
+    rcs_weight: 1.0
+    doppler_weight: 1.0
+    normalize_ppp_by_gt_count: true
+    velocity_loss_mode: signed_l1
+    conditioning_dropout: 0.0
+    overfit_diagnostic_interval: 0
+    lr_range_test: false
+    keep_last_checkpoints: 5
+    prediction_interval: 0
+    prediction_random_sample: true
+    mark_link: identity
+work_dir: output/ditv2_training
+name: DiTV2
+tracker_project_name: train_radargen_ppp
+report_to: none
+resume_from: null
+tensorboard: true
+vae:
+  vae_downsample_rate: 8
+  vae_latent_dim: 64

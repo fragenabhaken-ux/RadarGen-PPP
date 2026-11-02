@@ -272,6 +272,26 @@ def validate_radargen_ppp_dataset_from_config(config, **kwargs):
     from radargen.datasets.truckscenes.config import TRUCKSCENES_REFERENCE_SENSOR
     from truckscenes import TruckScenes
 
+    cached_dataset = None
+    index_path = kwargs.get('index_path')
+    if index_path is not None:
+        from radargen.training.ppp_manifest import prepare_ppp_manifest, load_ppp_manifest
+        config.data.ppp_manifest_path = str(index_path)
+        if kwargs.get('rebuild_index', False) or not Path(index_path).expanduser().exists():
+            try:
+                prepare_ppp_manifest(config, rebuild=kwargs.get('rebuild_index', False))
+            except FileExistsError:
+                # Another validation process published the same index first.
+                if kwargs.get('rebuild_index', False):
+                    raise
+        try:
+            cached_dataset = load_ppp_manifest(config)
+        except ValueError as error:
+            raise ValueError(
+                f'Validation dataset index {index_path} could not be reused. '
+                'Run validation with --rebuild-dataset-index to repeat full validation. '
+                f'Details: {error}') from error
+
     extra = config.data.extra
     if extra.get('dataset_name') != 'truckscenes':
         raise ValueError('PPP dataset factory currently supports truckscenes only')
@@ -288,6 +308,10 @@ def validate_radargen_ppp_dataset_from_config(config, **kwargs):
         name='truckscenes', camera_views=extra['camera_views'],
         reference_sensor=TRUCKSCENES_REFERENCE_SENSOR, normalization=norm,
         data_root=trucksc.dataroot, version=trucksc.version))
+    if cached_dataset is not None:
+        cached_dataset.adapter = adapter
+        startup_log("validation dataset index reused", path=index_path, samples=len(cached_dataset))
+        return cached_dataset
     startup_log("adapter construction end; scene enumeration begin")
     return RadarGenPPPDataset(adapter, ppp_data_dir=config.data.ppp_data_dir,
                              split=extra['eval_split'], resolution=resolution,

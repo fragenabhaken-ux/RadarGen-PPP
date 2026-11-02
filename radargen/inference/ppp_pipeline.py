@@ -12,7 +12,10 @@ CONDITION_KEYS = ('bev_color_map', 'bev_seg_map', 'bev_velocity_map')
 
 class RadarGenPPPPipeline:
     def __init__(self, model, condition_encoder=None, text_provider=None, *, resolution=512,
-                 coordinate_range=50.0, device='cuda', mixed_precision='bf16', seed=42):
+                 coordinate_range=50.0, device='cuda', mixed_precision='bf16', seed=42, mark_link='cubic'):
+        if mark_link not in ('cubic', 'identity'):
+            raise ValueError('Unknown mark link')
+        self.mark_link = mark_link
         self.device = torch.device(device)
         self.model = model.to(self.device).eval()
         self.condition_encoder = (condition_encoder.to(self.device).eval()
@@ -40,7 +43,7 @@ class RadarGenPPPPipeline:
         fresh.model.resume_from = None
         fresh.load_from = None
         fresh.train.grad_checkpointing = False
-        if config.model.model in ('DinoPPP', 'Camera2Radar', 'Image2RadarV2'):
+        if config.model.model in ('DinoPPP', 'Camera2Radar', 'Image2RadarV2', 'DiTV2', 'NeckPPP'):
             from radargen.training.ppp_initialization import initialize_dino_ppp_model
 
             fresh.model.load_from = None
@@ -72,7 +75,8 @@ class RadarGenPPPPipeline:
         return cls(components.model, components.condition_encoder, text,
                    resolution=config.model.image_size,
                    coordinate_range=config.data.extra['coordinate_range'],
-                   device=device, mixed_precision=config.model.mixed_precision, seed=seed)
+                   device=device, mixed_precision=config.model.mixed_precision, seed=seed,
+                   mark_link=(getattr(config.train, "extra", None) or {}).get("mark_link", "cubic"))
 
     @torch.no_grad()
     def predict_fields(self, bev_color_map, bev_seg_map, bev_velocity_map, *, data_info=None):
@@ -140,4 +144,4 @@ class RadarGenPPPPipeline:
 
     def sample_fields(self, fields):
         return sample_ppp_grid(fields['log_intensity'], fields['rcs_raw'],
-                               fields['doppler_raw'], self.coordinate_range, self.generator)
+                               fields['doppler_raw'], self.coordinate_range, self.generator, mark_link=self.mark_link)

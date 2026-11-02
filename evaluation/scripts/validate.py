@@ -19,9 +19,16 @@ def main():
     parser.add_argument('--output-dir', help='Override output directory (must be empty)')
     parser.add_argument('--max-samples', type=int, help='Optional bounded smoke run; default is all annotated validation keyframes')
     parser.add_argument('--resume', action='store_true', help='Continue an existing --output-dir with identical config/checkpoint/inventory')
+    parser.add_argument('--dataset-index', help='Override persistent validation dataset index path')
+    parser.add_argument('--rebuild-dataset-index', action='store_true',
+                        help='Repeat full metadata validation and replace the saved dataset index')
     args = parser.parse_args()
     with open(args.config) as stream:
         config = yaml.safe_load(stream)
+    if args.dataset_index:
+        config['dataset_index_path'] = args.dataset_index
+    if args.rebuild_dataset_index:
+        config['rebuild_dataset_index'] = True
     if args.checkpoint:
         config['checkpoint_path'] = args.checkpoint
     if not config.get('checkpoint_path'):

@@ -13,7 +13,10 @@ from .ppp_loss import PPPLoss, _require_finite
 class ContinuousPPPLoss(nn.Module):
     """Return unweighted per-batch PPP, RCS L1 and signed Doppler L1 losses."""
 
-    def __init__(self, out_img_size=(512, 512), normalize_by_gt_count=True, *, ppp_loss=None):
+    def __init__(self, out_img_size=(512, 512), normalize_by_gt_count=True, *, ppp_loss=None, mark_link="cubic"):
+        if mark_link not in ("cubic", "identity"):
+            raise ValueError("Unknown mark link")
+        self.mark_link = mark_link
         super().__init__()
         self.ppp = ppp_loss if ppp_loss is not None else PPPLoss(out_img_size, normalize_by_gt_count)
 
@@ -59,7 +62,7 @@ class ContinuousPPPLoss(nn.Module):
             ppp = integral - observation
             if self.ppp.normalize_by_gt_count:
                 ppp = ppp / denominator
-            physical_marks = sampled[:, 1:].pow(3)
+            physical_marks = sampled[:, 1:].pow(3) if self.mark_link == "cubic" else sampled[:, 1:]
             _require_finite(physical_marks, 'physical marks')
             errors = (physical_marks - target[:, 2:]).abs()
             losses = dict(ppp=ppp.mean(),

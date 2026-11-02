@@ -1,0 +1,14 @@
+# Final time-limited NeckPPP refinement checkpoint; same fixed 50 frames; PNGs enabled.
+dataset_config: configs/PPP_train_neck_finetune_2580695.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+max_samples: 50
+plot_dpi: 110
+plot_gamma: 0.2
+model: ppp
+model_config: configs/PPP_train_neck_finetune_2580695.yaml
+checkpoint_path: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2640537_PPP_train_neck_finetune_2580695/checkpoints/epoch_92_step_12156.pth
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/PPP_validation_neck_finetune_2640537
+tensorboard: false
+reference_validation_records: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2455164_PPP_validation_dinov3_2438929/metrics.jsonl
