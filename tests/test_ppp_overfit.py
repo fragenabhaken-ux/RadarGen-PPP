@@ -33,3 +33,16 @@ class DiagnosticTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_sampling_budget_and_exact_concentrated_fallback():
+    # A pathological fresh model must not trigger an enormous plot allocation.
+    with np.testing.assert_raises(module.DiagnosticSamplingLimit):
+        module.sample_ppp_thinning(np.full((2, 2), 1e15), np.random.default_rng(0))
+    mass = np.zeros((512, 512))
+    mass[200, 300] = 16.0
+    x, y, xi, yi = module.sample_ppp_thinning(mass, np.random.default_rng(0))
+    assert len(x) > 0
+    assert np.all(xi == 300) and np.all(yi == 200)
+    assert np.all((300 <= x) & (x < 301))
+    assert np.all((200 <= y) & (y < 201))

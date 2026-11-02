@@ -11,6 +11,7 @@ class RadarGenPPPTrainingModel(nn.Module):
         super().__init__()
         self.dit = dit
         self.ppp_decoder = ppp_decoder
+        self.output_scale = getattr(ppp_decoder, "output_scale", 1)
         self.measure_vram = False
         self.decoder_vram = None
 
@@ -37,6 +38,10 @@ class RadarGenPPPTrainingModel(nn.Module):
                 peak_extra=torch.cuda.max_memory_allocated(device) - baseline,
                 pre_peak=pre_peak,
             )
+        if getattr(self.ppp_decoder, 'joint_streams', False):
+            if decoded.ndim != 4 or decoded.shape[:2] != (batch, len(PPP_MODALITIES)):
+                raise ValueError('Joint PPP decoder must return (B,3,H,W)')
+            return decoded.unsqueeze(2)
         if decoded.ndim != 4 or decoded.shape[:2] != (len(PPP_MODALITIES) * batch, 1):
             raise ValueError("PPP decoder must return (3B,1,H,W)")
         return decoded.reshape(batch, len(PPP_MODALITIES), 1, *decoded.shape[-2:])

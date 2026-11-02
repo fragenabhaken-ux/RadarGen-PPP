@@ -24,6 +24,7 @@ class RadarGenPPPPipeline:
             raise ValueError('The latent PPP model requires a text provider')
         self.text_provider = text_provider
         self.resolution = resolution
+        self.output_resolution = resolution * getattr(model, "output_scale", 1)
         self.coordinate_range = coordinate_range
         if mixed_precision not in ('bf16', 'fp16', 'no', 'fp32'):
             raise ValueError('Unsupported inference precision')
@@ -104,14 +105,14 @@ class RadarGenPPPPipeline:
         with context:
             if self.condition_encoder is None:
                 output = self.model(*maps)
-                if tuple(output.shape) != (1, 3, self.resolution, self.resolution):
+                if tuple(output.shape) != (1, 3, self.output_resolution, self.output_resolution):
                     raise ValueError('Unexpected direct PPP output shape')
                 output = output.unsqueeze(2)
             else:
                 latents = self.condition_encoder(maps)  # no condition dropout
                 y, mask = self.text_provider(1, self.device)
                 output = self.model(latents, y, mask=mask, data_info=data_info)
-        if tuple(output.shape) != (1, 3, 1, self.resolution, self.resolution):
+        if tuple(output.shape) != (1, 3, 1, self.output_resolution, self.output_resolution):
             raise ValueError('Unexpected decoded PPP output shape')
         if not torch.isfinite(output).all():
             raise ValueError('Nonfinite predicted fields')

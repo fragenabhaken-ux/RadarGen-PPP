@@ -1,0 +1,25 @@
+digraph Decoder {
+  graph [rankdir=TB, bgcolor="white", pad="0.3", nodesep="0.35", ranksep="0.35", fontname="DejaVu Sans", labelloc=t, label="DINOv3-PPP: aktueller Decoder\n3×3-Projektionen · Pixel Shuffle · versetzte Attention-Fenster", fontsize=20];
+  node [shape=box, style="rounded,filled", fillcolor="#EEF3FA", color="#8AA0BC", fontname="DejaVu Sans", fontsize=13, margin="0.2,0.12"];
+  edge [color="#64748B", arrowsize=0.75, fontname="DejaVu Sans", fontsize=11];
+  neck [label="Transformer-Neck\n1152 Channels · 32×32", fillcolor="#DCE8FA"];
+  up1 [label="3×3-Conv: 1152 → 2048 Channels\nPixel Shuffle ×4\n128 Channels · 128×128"];
+  ref1 [label="2 Residual-Attention-Blöcke\n128 Channels · 128×128", fillcolor="#E4F3EB"];
+  up2 [label="3×3-Conv: 128 → 1024 Channels\nPixel Shuffle ×4\n64 Channels · 512×512"];
+  ref2 [label="2 Residual-Attention-Blöcke\n64 Channels · 512×512", fillcolor="#E4F3EB"];
+  up3 [label="3×3-Conv: 64 → 128 Channels\nPixel Shuffle ×2\n32 Channels · 1024×1024"];
+  ref3 [label="2 Residual-Attention-Blöcke\n32 Channels · 1024×1024", fillcolor="#E4F3EB"];
+  out [label="1×1-Conv: 32 → 3 Channels\nKeine abschließende Aktivierung\nAusgabe: (B, 3, 1024, 1024)", fillcolor="#FCEBD4"];
+  fields [label="Drei rohe Felder\nLog-Intensität | RCS roh | Doppler roh", fillcolor="#FCEBD4"];
+  loss [label="Training: kontinuierliche PPP- und Mark-Losses\nKoordinaten jeder Detektion → Vorhersagezelle\nMehrere Detektionen pro Zelle bleiben erhalten", fillcolor="#F1E9FA"];
+  sample [label="Inferenz: Radar-Punktwolke\nZellmasse = exp(Log-Intensität) / (1024×1024)\nPoisson-Sampling pro Zelle\nRCS = (RCS roh)³ · Doppler = (Doppler roh)³", fillcolor="#F1E9FA"];
+  detail [label="Jeder Residual-Attention-Block\n① Zwei 3×3-Convs mit Residualverbindung\n② 8×8-Window-Attention mit Residualverbindung\n③ MLP mit Residualverbindung\n\nBlock 1: normale Fenster\nBlock 2: um 4 Positionen versetzte Fenster\nKeine Verbindung gegenüberliegender BEV-Ränder", fillcolor="#F6FAF7", color="#80AC94", fontsize=12];
+  note [label="Alle Raster decken dieselbe Fläche ab: 100 m × 100 m.\nKein bilineares / Nearest-Neighbor-Upsampling.\nNach der Feldausgabe kein weiteres Resizing.", shape=plaintext, fillcolor="white", fontsize=12];
+  neck -> up1 -> ref1 -> up2 -> ref2 -> up3 -> ref3 -> out -> fields;
+  fields -> loss;
+  fields -> sample;
+  ref2 -> detail [style=dashed, arrowhead=none, constraint=false];
+  {rank=same; ref2; detail;}
+  {rank=same; loss; sample;}
+  sample -> note [style=invis];
+}

@@ -110,3 +110,28 @@ def load_ppp_checkpoint(checkpoint_path, training_model, optimizer=None, lr_sche
         lr_scheduler.load_state_dict(state['scheduler'])
     rng = dict(ranks[rank], ppp_training=metadata)
     return state['epoch'], missing, unexpected, rng
+
+
+def load_ppp_backbone(checkpoint_path, training_model):
+    """Strictly transfer a legacy PPP backbone, excluding only its output head.
+
+    Never restore decoder weights, optimizer, scheduler, RNG or progress.
+    Normal checkpoint resume remains strict for both decoder architectures.
+    """
+    if not getattr(training_model.dit, 'return_features', False):
+        raise ValueError('Backbone transfer requires the wide PPP decoder variant')
+    state = torch.load(checkpoint_path, map_location='cpu', mmap=True, weights_only=False)
+    if state.get('ppp_training', {}).get('version') != 1:
+        raise ValueError('Expected a version-1 PPP training checkpoint')
+    saved = state['state_dict']
+    if not any(k.startswith('ppp_decoder.') for k in saved):
+        raise ValueError('Expected a complete PPP wrapper checkpoint')
+    backbone = {k[len('dit.'):]: v for k, v in saved.items()
+                if k.startswith('dit.') and not k.startswith('dit.final_layer.')}
+    expected = training_model.dit.state_dict()
+    missing, unexpected = set(expected) - set(backbone), set(backbone) - set(expected)
+    mismatched = [k for k in set(expected) & set(backbone) if expected[k].shape != backbone[k].shape]
+    if missing or unexpected or mismatched:
+        raise ValueError(f'PPP backbone mismatch: missing={sorted(missing)}, '
+                         f'unexpected={sorted(unexpected)}, shapes={sorted(mismatched)}')
+    training_model.dit.load_state_dict(backbone, strict=True)

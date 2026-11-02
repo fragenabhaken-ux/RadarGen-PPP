@@ -355,7 +355,7 @@ class RadarGen(Sana):
 
         return x
     
-    def inner_forward(self, x, timestep, y, mask=None, data_info=None, **kwargs):
+    def inner_forward(self, x, timestep, y, mask=None, data_info=None, return_features=False, **kwargs):
         """
         The actual forward pass of Sana.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
@@ -412,6 +412,9 @@ class RadarGen(Sana):
             x = auto_grad_checkpoint(
                 block, x, y, t0, y_lens, (self.h, self.w), **kwargs
             )  # (N, T, D) #support grad checkpoint
+
+        if return_features:
+            return x.transpose(1, 2).reshape(bs, -1, self.h, self.w).contiguous()
 
         x = self.final_layer(x, t)  # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)  # (N, out_channels, H, W)

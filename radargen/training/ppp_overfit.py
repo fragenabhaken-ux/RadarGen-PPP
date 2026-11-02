@@ -4,6 +4,10 @@ from pathlib import Path
 import numpy as np
 
 
+class DiagnosticSamplingLimit(RuntimeError):
+    """A plot would need an impractically large point set; fields remain unchanged."""
+
+
 def sample_ppp_thinning(cell_mass, rng):
     """Sample point locations from a piecewise-constant PPP intensity map."""
     lam = np.asarray(cell_mass, dtype=np.float64)
@@ -16,6 +20,18 @@ def sample_ppp_thinning(cell_mass, rng):
         empty = np.zeros(0, dtype=np.float64)
         return empty, empty, np.zeros(0, dtype=int), np.zeros(0, dtype=int)
 
+    if float(lam.sum()) > 100000:
+        raise DiagnosticSamplingLimit('Predicted expected count exceeds 100,000 diagnostic points')
+    # Thinning becomes wasteful for a highly concentrated intensity. Independent
+    # per-cell Poisson counts with uniform within-cell locations have the exact
+    # same PPP law, without proposing points across the entire image.
+    if lam_max * h * w > 1000000:
+        counts = rng.poisson(lam)
+        if int(counts.sum()) > 100000:
+            raise DiagnosticSamplingLimit('Sample exceeds 100,000 diagnostic points')
+        cells = np.repeat(np.arange(h * w), counts.reshape(-1))
+        yi, xi = np.divmod(cells, w)
+        return xi + rng.random(len(cells)), yi + rng.random(len(cells)), xi, yi
     # Each cell has unit area, so the proposal count is lam_max * H * W.
     n_proposals = int(rng.poisson(lam_max * h * w))
     if n_proposals == 0:
@@ -183,7 +199,16 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                 sample_rng = np.random.default_rng(
                     np.random.SeedSequence([int(step), int(index)])
                 )
-                sx, sy, sxi, syi = sample_ppp_thinning(mass, sample_rng)
+                sampling_skipped = False
+                try:
+                    sx, sy, sxi, syi = sample_ppp_thinning(mass, sample_rng)
+                except DiagnosticSamplingLimit as error:
+                    sampling_skipped = True
+                    log.warning('Step %s sample %s: skipping only point-sampling panels: %s; expected_count=%s',
+                                step, index, error, stats['expected_count'])
+                    sx = sy = np.zeros(0, dtype=np.float64)
+                    sxi = syi = np.zeros(0, dtype=int)
+                row['sampling_skipped'] = sampling_skipped
                 sampled_rcs = marks[0, syi, sxi]
                 sampled_doppler = marks[1, syi, sxi]
 
@@ -309,7 +334,7 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                         ax.text(
                             0.5,
                             0.5,
-                            'No points sampled',
+                            'Sampling skipped: excessive intensity' if sampling_skipped else 'No points sampled',
                             transform=ax.transAxes,
                             ha='center',
                             va='center',

@@ -20,9 +20,10 @@ class RadarGenPPP(RadarGen):
                          patch_size=patch_size, **kwargs)
         self.num_conditions = num_conditions
         self.fixed_timestep = 0.0
+        self.return_features = False
 
     def forward(self, timestep, y, mask=None, data_info=None, bev_condition_maps=None, **kwargs):
-        """Three scaled condition latents (B,32,h,w) -> (3B,32,h,w).
+        """Three condition latents -> 3B latent fields or full-width features.
 
         Text/mask/timestep must already have the modality-expanded 3B batch.
         No noisy radar latent or external modality ID is accepted.
@@ -50,8 +51,10 @@ class RadarGenPPP(RadarGen):
         streams = conditions[:, None].expand(-1, self.num_maps, -1, -1, -1)
         modality = self.modality_pe[None, :, :, None, None].expand(batch, -1, -1, height, width)
         spatial_input = torch.cat((streams, modality), dim=2).reshape(expanded_batch, 99, height, width)
-        output = self.inner_forward(spatial_input, timestep, y, mask=mask, data_info=data_info, **kwargs)
-        if output.shape != (expanded_batch, 32, height, width):
+        output = self.inner_forward(spatial_input, timestep, y, mask=mask, data_info=data_info,
+                                    return_features=self.return_features, **kwargs)
+        channels = self.x_embedder.proj.out_channels if self.return_features else 32
+        if output.shape != (expanded_batch, channels, height, width):
             raise ValueError(f"Unexpected PPP DiT output shape: {tuple(output.shape)}")
         return output
 

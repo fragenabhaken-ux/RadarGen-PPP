@@ -161,7 +161,35 @@ def initialize_ppp_model(config, *, null_embed_path, device="cpu", checkpoint_pa
         raise ValueError('train.extra.decoder_grad_checkpointing must be boolean')
     ae.decoder.gradient_checkpointing = decoder_checkpointing
     logger.info('PPP decoder activation checkpointing: %s', decoder_checkpointing)
-    decoder = PPPDecoder(ae.decoder, scale)
+    decoder_type = extra.get('decoder_type', 'dc_ae')
+    if decoder_type in ('wide', 'wide_nearest_efficientvit', 'wide_pixelshuffle', 'wide_joint_dino_attention'):
+        from radargen.models.wide_ppp_decoder import (
+            WidePPPDecoder, NearestEfficientPPPDecoder, PixelShufflePPPDecoder, JointDinoAttentionPPPDecoder,
+        )
+        decoder_class = {
+            'wide': WidePPPDecoder,
+            'wide_nearest_efficientvit': NearestEfficientPPPDecoder,
+            'wide_pixelshuffle': PixelShufflePPPDecoder,
+            'wide_joint_dino_attention': JointDinoAttentionPPPDecoder,
+        }[decoder_type]
+        if dit.patch_size != 1:
+            raise ValueError('Wide PPP decoder requires patch size one')
+        budget = sum(p.numel() for p in ae.decoder.parameters())
+        decoder_options = ({"output_scale": extra.get("output_scale", 1)}
+                           if decoder_type == "wide_joint_dino_attention" else {})
+        decoder = decoder_class(
+            in_channels=dit.x_embedder.proj.out_channels,
+            parameter_budget=budget,
+            gradient_checkpointing=decoder_checkpointing, **decoder_options).to(device)
+        # Remove the unused output head so DDP sees no disconnected parameters.
+        dit.final_layer = torch.nn.Identity()
+        dit.return_features = True
+        logger.info('PPP decoder %s parameters: %s (DC-AE budget %s)',
+                    decoder_type, decoder.parameter_count, budget)
+    elif decoder_type == 'dc_ae':
+        decoder = PPPDecoder(ae.decoder, scale)
+    else:
+        raise ValueError(f'Unknown PPP decoder type: {decoder_type}')
     model = RadarGenPPPTrainingModel(dit, decoder)
     logger.info('PPP adapted shapes: input=%s modality=%s output=%s',
                 tuple(dit.x_embedder.proj.weight.shape), tuple(dit.modality_pe.shape),

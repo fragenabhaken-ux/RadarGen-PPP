@@ -191,6 +191,93 @@ class PatchRearrangeHead(nn.Module):
         return self.refine(x)
 
 
+class WindowResidualAttentionBlock(nn.Module):
+    """Local convolution plus nonoverlapping window attention and residual MLP."""
+
+    def __init__(self, channels, heads=4, window_size=8, shift_size=0):
+        super().__init__()
+        if channels % heads or window_size < 1:
+            raise ValueError("Attention channels must divide heads; window size must be positive")
+        if not 0 <= shift_size < window_size:
+            raise ValueError("Window shift must be between zero and window_size - 1")
+        self.shift_size = shift_size
+        self.local = LocalConvResidualBlock(channels)
+        self.norm = nn.LayerNorm(channels)
+        self.attn = nn.MultiheadAttention(channels, heads, batch_first=True)
+        self.mlp = nn.Sequential(nn.LayerNorm(channels), nn.Linear(channels, channels * 2),
+                                 nn.GELU(), nn.Linear(channels * 2, channels))
+        self.window_size = window_size
+        # CUDA SDPA kernels can limit the batch of windows to 65535.
+        self.window_batch_size = 4096
+
+    def forward(self, x):
+        x = self.local(x)
+        b, c, h, w = x.shape
+        size = self.window_size
+        shift = self.shift_size
+        # Offset the partition using masked padding instead of cyclic rolling:
+        # shifted windows cross old boundaries without joining opposite BEV edges.
+        padding = (shift, -(w + shift) % size, shift, -(h + shift) % size)
+        padded = F.pad(x, padding)
+        hp, wp = padded.shape[-2:]
+        tokens = padded.reshape(b, c, hp // size, size, wp // size, size)
+        tokens = tokens.permute(0, 2, 4, 3, 5, 1).reshape(-1, size * size, c)
+        # Mask padding keys so edge windows do not attend to artificial cells.
+        valid = x.new_ones((b, 1, h, w))
+        valid = F.pad(valid, padding)
+        mask = valid.reshape(b, 1, hp // size, size, wp // size, size)
+        mask = mask.permute(0, 2, 4, 3, 5, 1).reshape(-1, size * size) == 0
+        normalized = self.norm(tokens)
+        attended = []
+        for start in range(0, normalized.shape[0], self.window_batch_size):
+            window = normalized[start:start + self.window_batch_size]
+            attended.append(self.attn(window, window, window,
+                key_padding_mask=mask[start:start + self.window_batch_size], need_weights=False)[0])
+        tokens = tokens + torch.cat(attended, dim=0)
+        tokens = tokens + self.mlp(tokens)
+        return tokens.reshape(b, hp // size, wp // size, size, size, c).permute(
+            0, 5, 1, 3, 2, 4).reshape(b, c, hp, wp)[..., shift:shift + h, shift:shift + w]
+
+
+class AttentionPixelShuffleHead(nn.Module):
+    """Two 4x stages plus an optional learned 2x/4x stage, each fully refined."""
+
+    def __init__(self, dim, channels=(128, 64, 32), blocks=2, heads=4,
+                 window_size=8, output_scale=2, grad_checkpointing=False,
+                 projection_kernel_size=1, shifted_windows=False, final_upsample_factor=2):
+        super().__init__()
+        if output_scale not in (1, 2) or len(channels) != 3 or blocks < 1:
+            raise ValueError("Attention decoder requires scale 1/2, three widths and positive blocks")
+        if projection_kernel_size not in (1, 3):
+            raise ValueError("Attention projection kernel size must be 1 or 3")
+        if shifted_windows and (blocks < 2 or window_size < 2):
+            raise ValueError("Shifted attention requires at least two blocks and window_size >= 2")
+        if final_upsample_factor not in (2, 4):
+            raise ValueError("Final pixel-shuffle factor must be 2 or 4")
+        self.grad_checkpointing = grad_checkpointing
+        self.stages = nn.ModuleList()
+        previous = dim
+        for width, factor in zip(channels[:2] if output_scale == 1 else channels, (4, 4, final_upsample_factor)):
+            projection = nn.Conv2d(previous, width * factor**2, projection_kernel_size,
+                                   padding=projection_kernel_size // 2)
+            _icnr_init(projection, factor)
+            self.stages.append(nn.Sequential(projection, nn.PixelShuffle(factor), *[
+                WindowResidualAttentionBlock(width, heads, window_size,
+                    shift_size=window_size // 2 if shifted_windows and index % 2 else 0)
+                for index in range(blocks)]))
+            previous = width
+        self.readout = nn.Conv2d(previous, 3, 1)
+
+    def forward(self, x):
+        for stage in self.stages:
+            for layer in stage:
+                if self.grad_checkpointing and self.training and torch.is_grad_enabled():
+                    x = checkpoint(layer, x, use_reentrant=False)
+                else:
+                    x = layer(x)
+        return self.readout(x)
+
+
 def _icnr_init(conv: nn.Conv2d, upscale_factor: int) -> None:
     """Initialize pixel-shuffle subkernels identically to reduce phase artifacts."""
     scale_area = upscale_factor**2
@@ -215,6 +302,11 @@ class ProgressivePixelShuffleHead(nn.Module):
     def __init__(
         self,
         dim: int,
+        output_scale: int = 1,
+        attention_channels: tuple[int, ...] = (128, 64, 32),
+        attention_blocks: int = 2,
+        attention_heads: int = 4,
+        attention_window_size: int = 8,
         stage_channels: tuple[int, ...] = (128, 64, 32, 16),
         local_refine_blocks: int = 1,
     ):
@@ -260,10 +352,12 @@ class DinoPPP(nn.Module):
     stacked into the batch dimension and processed independently by the native
     RGB DINOv3 backbone with a separate LoRA for each conditioning. For every
     selected block, (3B,D,h,w) features are regrouped into (B,3D,h,w) before
-    projection and fusion. The shared neck keeps this grid; four 2x upsampling
-    stages reconstruct the three radar fields at the original pixel resolution.
+    optional projection and fusion. last_concat feeds only the final block
+    directly into a 3D-wide neck. The shared neck preserves spatial size and
+    channel width; the selected decoder reconstructs the three radar fields.
 
-    Returns (B, 3, H, W) in fixed order: log-intensity, raw RCS, raw Doppler.
+    Returns (B, 3, H*output_scale, W*output_scale) in fixed order:
+    log-intensity, raw RCS, raw Doppler.
     The existing PPP loss applies the intensity and physical-mark links.
     There are no target latents, diffusion steps, or modality indicators.
     """
@@ -280,13 +374,21 @@ class DinoPPP(nn.Module):
         lora_dropout: float = 0.0,
         target_modules: tuple[str, ...] = ("attn.qkv", "attn.proj", "mlp.fc1", "mlp.fc2"),
         out_indices: tuple[int, ...] = (2, 5, 8, 11),
+        feature_fusion: Literal["multilayer", "last_concat"] = "multilayer",
         per_layer_channels: int = 128,
         embed_dim: int = 384,
         neck_layers: int = 12,
         neck_heads: int = 6,
         mlp_ratio: float = 4.0,
         attn_dropout: float = 0.0,
-        decoder: Literal["patchrearrange", "progressive"] = "progressive",
+        decoder: Literal["patchrearrange", "progressive", "attention"] = "progressive",
+        output_scale: int = 1,
+        attention_channels: tuple[int, ...] = (128, 64, 32),
+        attention_blocks: int = 2,
+        attention_heads: int = 4,
+        attention_window_size: int = 8,
+        attention_projection_kernel_size: int = 1,
+        attention_shifted_windows: bool = False,
         stage_channels: tuple[int, ...] = (128, 64, 32, 16),
         refine_channels: int = 128,
         num_refine_convs: int = 5,
@@ -296,8 +398,12 @@ class DinoPPP(nn.Module):
         super().__init__()
         import timm
 
+        if output_scale not in (1, 2) or (output_scale != 1 and decoder != "attention"):
+            raise ValueError("Only the attention decoder supports output_scale=2")
+        self.output_scale = output_scale
         self.frozen_base = frozen_base
         self.out_indices = tuple(out_indices)
+        self.feature_fusion = feature_fusion
         # Keep the native RGB patch projection so pretrained weights load unchanged.
         model_kwargs = dict(pretrained=pretrained, in_chans=3, num_classes=0)
         if checkpoint_path:
@@ -325,26 +431,46 @@ class DinoPPP(nn.Module):
                     child_name,
                     LoRALinear(module, lora_r, lora_alpha, lora_dropout, num_adapters=3),
                 )
+        if not frozen_base:
+            # LoRA wrappers freeze their base linear on construction; full training
+            # must explicitly restore its gradients while retaining the adapters.
+            self.backbone.requires_grad_(True)
         if grad_checkpointing:
             self.backbone.set_grad_checkpointing(True)
 
-        self.layer_projs = nn.ModuleList(
-            nn.Sequential(
-                nn.Conv2d(3 * original.out_channels, per_layer_channels, 1, bias=False),
-                nn.GroupNorm(1, per_layer_channels),
+        if feature_fusion == "last_concat":
+            if (len(self.out_indices) != 1 or
+                    self.out_indices[0] % len(self.backbone.blocks) != len(self.backbone.blocks) - 1):
+                raise ValueError("last_concat requires only the final DINO block")
+            if embed_dim != 3 * original.out_channels:
+                raise ValueError("last_concat neck width must equal three backbone feature widths")
+            self.layer_projs = nn.ModuleList()
+            self.fuse = nn.Identity()
+        elif feature_fusion == "multilayer":
+            self.layer_projs = nn.ModuleList(
+                nn.Sequential(
+                    nn.Conv2d(3 * original.out_channels, per_layer_channels, 1, bias=False),
+                    nn.GroupNorm(1, per_layer_channels),
+                    nn.GELU(),
+                )
+                for _ in self.out_indices
+            )
+            self.fuse = nn.Sequential(
+                nn.Conv2d(len(self.out_indices) * per_layer_channels, embed_dim, 1, bias=False),
+                nn.GroupNorm(1, embed_dim),
                 nn.GELU(),
             )
-            for _ in self.out_indices
-        )
-        self.fuse = nn.Sequential(
-            nn.Conv2d(len(self.out_indices) * per_layer_channels, embed_dim, 1, bias=False),
-            nn.GroupNorm(1, embed_dim),
-            nn.GELU(),
-        )
+        else:
+            raise ValueError(f"Unsupported feature fusion: {feature_fusion}")
         self.neck = RoPETransformerNeck(
             embed_dim, neck_layers, neck_heads, mlp_ratio, attn_dropout, grad_checkpointing
         )
-        if decoder == "patchrearrange":
+        if decoder == "attention":
+            self.head = AttentionPixelShuffleHead(
+                embed_dim, attention_channels, attention_blocks, attention_heads,
+                attention_window_size, output_scale, grad_checkpointing,
+                attention_projection_kernel_size, attention_shifted_windows)
+        elif decoder == "patchrearrange":
             self.head = PatchRearrangeHead(
                 embed_dim, refine_channels, num_refine_convs, local_refine_blocks
             )
@@ -381,6 +507,31 @@ class DinoPPP(nn.Module):
             x, indices=list(self.out_indices), norm=True, output_fmt="NCHW", intermediates_only=True
         )
         features = [torch.cat(feature.split(batch_size, dim=0), dim=1) for feature in features]
-        x = torch.cat([projection(feature) for projection, feature in zip(self.layer_projs, features)], dim=1)
+        if self.feature_fusion == "last_concat":
+            x = features[0]
+        else:
+            x = torch.cat([projection(feature) for projection, feature in zip(self.layer_projs, features)], dim=1)
         x = self.head(self.neck(self.fuse(x)))
-        return x[..., :height, :width]
+        return x[..., :height * self.output_scale, :width * self.output_scale]
+
+
+def load_dino_features(checkpoint_path, model):
+    """Transfer matching features; a last-concat variant transfers only DINO."""
+    if not isinstance(model, DinoPPP) or not isinstance(model.head, AttentionPixelShuffleHead):
+        raise ValueError("DINO feature transfer requires the attention decoder variant")
+    state = torch.load(checkpoint_path, map_location="cpu", mmap=True, weights_only=False)
+    if state.get("ppp_training", {}).get("version") != 1:
+        raise ValueError("Expected a version-1 PPP checkpoint")
+    if model.feature_fusion == "last_concat":
+        # The wider neck has incompatible weights; never partially transplant it.
+        select = lambda key: key.startswith("backbone.")
+        allowed = ("backbone.", "layer_projs.", "fuse.", "neck.", "head.")
+        if any(not key.startswith(allowed) for key in state["state_dict"]):
+            raise ValueError("Unexpected keys in DINO feature checkpoint")
+    else:
+        select = lambda key: not key.startswith("head.")
+    saved = {k: v for k, v in state["state_dict"].items() if select(k)}
+    expected = {k: v for k, v in model.state_dict().items() if select(k)}
+    if saved.keys() != expected.keys() or any(saved[k].shape != expected[k].shape for k in expected):
+        raise ValueError("DINO feature checkpoint keys/shapes do not match")
+    model.load_state_dict({**model.state_dict(), **saved}, strict=True)

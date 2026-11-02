@@ -67,6 +67,13 @@ def validate_ppp_config(config: SanaConfig) -> None:
         require(config.vae.vae_type == "dc-ae" and config.vae.weight_dtype == "float32", "PPP requires dc-ae with float32 weights")
         require(config.vae.vae_latent_dim == config.vae.vae_downsample_rate == 32, "PPP requires 32 latent channels and downsample rate 32")
         require(bool(config.vae.vae_pretrained), "vae.vae_pretrained is required")
+        require(model.get('decoder_type', 'dc_ae') in ('dc_ae', 'wide', 'wide_nearest_efficientvit', 'wide_pixelshuffle', 'wide_joint_dino_attention'), 'Unknown decoder_type')
+        output_scale = model.get('output_scale', 1)
+        require(type(output_scale) is int and output_scale in (1, 2), 'output_scale must be 1 or 2')
+        require(output_scale == 1 or model.get('decoder_type') == 'wide_joint_dino_attention',
+                'Latent output_scale=2 requires the joint DINO head')
+        if model.get('decoder_type', 'dc_ae') != 'dc_ae':
+            require(not config.train.extra.get('freeze_decoder', False), 'Wide PPP decoder must be trainable')
     indices = data.get("ppp_subset_indices")
     if indices is not None:
         require(isinstance(indices, list) and bool(indices) and
@@ -74,6 +81,8 @@ def validate_ppp_config(config: SanaConfig) -> None:
                 "ppp_subset_indices must be distinct nonnegative integers")
     losses = config.train.extra
     require(isinstance(losses, dict), "train.extra must be a dictionary")
+    require(type(losses.get("shuffle_each_epoch", False)) is bool,
+            "shuffle_each_epoch must be boolean")
     keep_last = losses.get("keep_last_checkpoints", 0)
     require(type(keep_last) is int and keep_last >= 0,
             "keep_last_checkpoints must be a nonnegative integer (0 keeps all)")
@@ -264,9 +273,12 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     if options.smoke_check and accelerator.num_processes != 1:
         raise ValueError('The minimal checkpoint mutation smoke check requires one GPU/process')
     # Preserve the original latent sweep setup; DINO uses its configured batch and GPU count.
-    if sweep and not direct and (accelerator.num_processes != 4 or config.train.train_batch_size != 5 or
-                  config.train.gradient_accumulation_steps != 1):
-        raise ValueError('Latent LR range run requires four processes, batch size 5 per GPU and accumulation 1')
+    if sweep and not direct:
+        if accelerator.num_processes != 4 or config.train.gradient_accumulation_steps != 1:
+            raise ValueError('Latent LR range run requires four processes and accumulation 1')
+        if (config.model.extra.get('decoder_type') != 'wide_joint_dino_attention'
+                and config.train.train_batch_size != 5):
+            raise ValueError('Legacy latent LR range run requires batch size 5 per GPU')
     if components is None and accelerator.device.type != 'cuda':
         raise ValueError('Pretrained PPP training requires an allocated GPU; use --validate-only on login nodes')
     if options.max_updates is not None and options.max_updates <= 0:
@@ -283,8 +295,10 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     if resume is not None and not isinstance(resume, str):
         raise ValueError('PPP resume must be a local path or latest')
     init_from = getattr(options, 'init_from', None)
-    if init_from and resume:
-        raise ValueError('--init-from and resume are mutually exclusive')
+    init_dino = getattr(options, 'init_dino_from', None)
+    init_backbone = getattr(options, 'init_backbone_from', None)
+    if sum(bool(value) for value in (init_from, init_backbone, init_dino, resume)) > 1:
+        raise ValueError('--init-from, --init-backbone-from, --init-dino-from and resume are mutually exclusive')
     if resume == 'latest':
         resume = str(Path(config.work_dir)/'checkpoints/latest.pth')
     fresh_config = copy.deepcopy(config)
@@ -307,7 +321,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     if components is None:
         if direct:
             components = initialize_dino_ppp_model(fresh_config, device=accelerator.device,
-                                                   load_pretrained=not (resume or init_from))
+                                                   load_pretrained=not (resume or init_from or init_dino))
         else:
             components = initialize_ppp_model(fresh_config, null_embed_path=options.null_embed_path,
                                               device=accelerator.device)
@@ -318,6 +332,15 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     if init_from:
         load_ppp_checkpoint(init_from, model, resume_optimizer=False, resume_lr_scheduler=False)
         logger.info('Initialized PPP model weights from %s; optimizer, scheduler and progress start fresh', init_from)
+    if init_dino:
+        from radargen.models.dino_ppp import load_dino_features
+        load_dino_features(init_dino, model)
+        logger.info('Transferred DINO weights from %s (fusion=%s); last_concat initializes neck/head fresh',
+                    init_dino, model.feature_fusion)
+    if init_backbone:
+        from radargen.training.ppp_checkpoint import load_ppp_backbone
+        load_ppp_backbone(init_backbone, model)
+        logger.info('Initialized DiT backbone from %s; decoder and optimizer start fresh', init_backbone)
     freeze_decoder = config.train.extra.get("freeze_decoder", False)
     if not isinstance(freeze_decoder, bool):
         raise ValueError("train.extra.freeze_decoder must be boolean")
@@ -341,8 +364,17 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     if config.train.extra.get('log_step_timing', False):
         from radargen.training.ppp_timing import TimedDataset
         dataset = TimedDataset(dataset)
-    sampler = DistributedRangedSampler(dataset, num_replicas=accelerator.num_processes,
-                                       rank=accelerator.process_index)
+    shuffle_each_epoch = config.train.extra.get('shuffle_each_epoch', False)
+    if not isinstance(shuffle_each_epoch, bool):
+        raise ValueError('train.extra.shuffle_each_epoch must be boolean')
+    if shuffle_each_epoch:
+        from radargen.training.ppp_sampler import ResumableDistributedShuffleSampler
+        sampler = ResumableDistributedShuffleSampler(dataset, num_replicas=accelerator.num_processes,
+                    rank=accelerator.process_index, seed=config.train.seed)
+        logger.info('PPP sampling: global deterministic shuffle with seed + epoch (seed=%s)', config.train.seed)
+    else:
+        sampler = DistributedRangedSampler(dataset, num_replicas=accelerator.num_processes,
+                                           rank=accelerator.process_index)
     if len(sampler) == 0:
         raise ValueError('Selected PPP inventory cannot supply a batch per rank')
     from radargen.training.ppp_collate import collate_ppp_samples
@@ -433,7 +465,8 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     writer = output_stack.enter_context(tensorboard_writer(
         config.work_dir, config.tensorboard and accelerator.is_main_process and not final_pngs_only,
         purge_step=progress['global_step'] + 1 if resume else None))
-    ppp_loss = PPPLoss(out_img_size=(512,512),
+    output_resolution = config.model.image_size * getattr(accelerator.unwrap_model(model), "output_scale", 1)
+    ppp_loss = PPPLoss(out_img_size=(output_resolution, output_resolution),
                        normalize_by_gt_count=config.train.extra['normalize_ppp_by_gt_count']).to(accelerator.device)
     model.train()
     optimizer.zero_grad(set_to_none=True)
@@ -451,8 +484,35 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     updates_this_run = 0
     first_microbatch = True
     vram_microbatch = 0
-    log_gpu_memory = direct and accelerator.is_main_process and accelerator.device.type == 'cuda'
+    log_gpu_memory = ((direct or config.train.extra.get('log_gpu_memory', False))
+                      and accelerator.is_main_process and accelerator.device.type == 'cuda')
     measured_step = None
+    step_start_allocated_gib = 0.0
+
+    def record_gpu_memory(phase):
+        import json
+        torch.cuda.synchronize(accelerator.device)
+        gib = 1024 ** 3
+        free, total = torch.cuda.mem_get_info(accelerator.device)
+        values = dict(
+            gpu_allocated_gib=torch.cuda.memory_allocated(accelerator.device) / gib,
+            gpu_reserved_gib=torch.cuda.memory_reserved(accelerator.device) / gib,
+            gpu_peak_allocated_gib=torch.cuda.max_memory_allocated(accelerator.device) / gib,
+            gpu_peak_reserved_gib=torch.cuda.max_memory_reserved(accelerator.device) / gib,
+            gpu_free_gib=free / gib, gpu_total_gib=total / gib,
+            gpu_step_start_allocated_gib=step_start_allocated_gib,
+        )
+        row = dict(phase=phase, update=progress['global_step'],
+                   microbatch_size=config.train.train_batch_size,
+                   accumulation=config.train.gradient_accumulation_steps, **values)
+        with (Path(config.work_dir) / 'gpu_memory.jsonl').open('a') as stream:
+            stream.write(json.dumps(row) + '\n')
+        if phase != 'train' or updates_this_run <= 3 or progress['global_step'] % config.train.log_interval == 0:
+            logger.info('[GPU memory] %s', row)
+        return values
+
+    if log_gpu_memory:
+        record_gpu_memory('ready')
 
     def save():
         nonlocal last_saved
@@ -530,8 +590,17 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     stop = False
     for epoch in range(progress['epoch'], config.train.num_epochs):
         start_batch = progress['batch_in_epoch'] if epoch == progress['epoch'] else 0
+        # DataLoaderShard.__iter__ also sets the sampler epoch from its own
+        # iteration counter. Set both explicitly, particularly after resume.
+        if shuffle_each_epoch:
+            loader.set_epoch(epoch)
         sampler.set_epoch(epoch)
         sampler.set_start(start_batch * config.train.train_batch_size)
+        if shuffle_each_epoch:
+            from itertools import islice
+            logger.info('PPP shuffle epoch=%d seed=%d rank=%d start_sample=%d first_indices=%s',
+                epoch, config.train.seed + epoch, accelerator.process_index,
+                sampler.step_start, list(islice(iter(sampler), 8)))
         # Creating workers/iterator consumes only the loader generator, not training RNG.
         if first_microbatch:
             startup_log("first batch iterator begin")
@@ -558,12 +627,15 @@ def _run_training(config, options, *, components, dataset, text_provider, output
                 # Include all accumulated microbatches and the optimizer update.
                 # Reset here so prediction images between updates do not affect
                 # the next training step's peak memory measurement.
+                torch.cuda.synchronize(accelerator.device)
+                step_start_allocated_gib = torch.cuda.memory_allocated(accelerator.device) / (1024 ** 3)
                 torch.cuda.reset_peak_memory_stats(accelerator.device)
                 measured_step = progress['global_step']
             # Measure microbatches 10–12 once per launch, after optimizer warm-up.
             vram_microbatch += 1
             measure_vram = (accelerator.is_main_process and accelerator.device.type == 'cuda'
-                            and not direct and 10 <= vram_microbatch <= 12)
+                            and not direct and not config.train.extra.get('log_gpu_memory', False)
+                            and 10 <= vram_microbatch <= 12)
             bare = accelerator.unwrap_model(model)
             bare.measure_vram = measure_vram
             if measure_vram:
@@ -643,13 +715,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
                 values.update(grad_norm=accelerator.reduce(grad_norm.float(), reduction='mean').item(),
                               lr=used_lr)
                 if log_gpu_memory:
-                    gib = 1024 ** 3
-                    values.update(
-                        gpu_allocated_gib=torch.cuda.memory_allocated(accelerator.device) / gib,
-                        gpu_reserved_gib=torch.cuda.memory_reserved(accelerator.device) / gib,
-                        gpu_peak_allocated_gib=torch.cuda.max_memory_allocated(accelerator.device) / gib,
-                        gpu_peak_reserved_gib=torch.cuda.max_memory_reserved(accelerator.device) / gib,
-                    )
+                    values.update(record_gpu_memory('train'))
                 if first_update:
                     startup_log("first metric collectives end", global_step=progress["global_step"])
                 if (progress['global_step'] % config.train.log_interval == 0 or updates_this_run == 1) and accelerator.is_main_process:
@@ -792,6 +858,8 @@ def main() -> int:
     parser.add_argument('--final-pngs-only', action='store_true', help='Only render final subset PNGs; suppress periodic diagnostics, raw arrays, TensorBoard and intermediate checkpoints')
     parser.add_argument('--max-updates', type=int, help='Stop after this many optimizer updates in this invocation')
     parser.add_argument('--smoke-check', action='store_true', help='Verify updates and checkpoint mutation/restoration (one GPU)')
+    parser.add_argument('--init-dino-from', help='Transfer DINO PPP features; last_concat transfers backbone/adapters only')
+    parser.add_argument('--init-backbone-from', help='Load a legacy PPP DiT backbone into the wide decoder variant')
     parser.add_argument('--init-from', help='Load PPP model weights only; start fresh optimizer, scheduler and progress')
     parser.add_argument('--resume', help='Resume a matching PPP training checkpoint or latest')
     parser.add_argument('--null-embed-path', default='output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth')

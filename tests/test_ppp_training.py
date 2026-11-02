@@ -105,8 +105,11 @@ class TrainingChecks(unittest.TestCase):
         set_seed(config.train.seed)
         fake=SimpleNamespace(device=torch.device('cpu'),autocast=nullcontext)
         manual.model.train()
+        # Match the training loop's configured output geometry; this fixture is 2x2.
+        reference_loss = PPPLoss(out_img_size=(config.model.image_size, config.model.image_size),
+                                normalize_by_gt_count=config.train.extra['normalize_ppp_by_gt_count'])
         for index,batch in enumerate(DataLoader(TinyDataset(),batch_size=1)):
-            loss,_=training_microbatch(manual.model,manual.condition_encoder,batch,text,PPPLoss(),config,fake)
+            loss,_=training_microbatch(manual.model,manual.condition_encoder,batch,text,reference_loss,config,fake)
             (loss/2).backward()
             if index==1:
                 break
