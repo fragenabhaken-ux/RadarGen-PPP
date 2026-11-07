@@ -1,0 +1,14 @@
+# Fixed SS50 benchmark, final available checkpoint, direct PNG output.
+dataset_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2719598_PPP_continue_dino_2684031_rcs_l2_4nodes/submitted_config.yaml
+model_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2719598_PPP_continue_dino_2684031_rcs_l2_4nodes/submitted_config.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+max_samples: 50
+plot_dpi: 110
+plot_gamma: 0.2
+model: ppp
+checkpoint_path: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2719598_PPP_continue_dino_2684031_rcs_l2_4nodes/checkpoints/epoch_45_step_9979.pth
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/PPP_validation_ss50_2719598
+tensorboard: false
+reference_validation_records: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2455164_PPP_validation_dinov3_2438929/metrics.jsonl

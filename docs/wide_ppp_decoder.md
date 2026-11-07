@@ -391,3 +391,11 @@ User increased the memory target to approximately 90 GiB. Job 2658292 was cancel
 At the user's request, batch was increased to **20/GPU** (effective **80**), estimated allocation **93.63 GiB/GPU**. Job 2658301 was canceled and replaced by **2658303**, using the same develbooster LR sweep without preliminary memory tests.
 
 Final batch selection: **19/GPU**, effective batch **76**, estimated allocation **89.49 GiB/GPU**. At the user's request job 2658303 was canceled and replaced by **2658305** on develbooster. The direct 600-update LR sweep and memory logging remain enabled, without preliminary memory tests.
+
+
+## Final head implementation
+
+The consolidated [final PPP head implementation](final_ppp_head.md) describes
+the selected shared head, the DiT bottleneck removal, DINO backbone unfreezing,
+patch-artifact changes, output-resolution comparison and epoch-wise shuffling.
+It records the final architecture choice alongside the historical experiments above.

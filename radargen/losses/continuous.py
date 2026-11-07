@@ -11,7 +11,8 @@ from .ppp_loss import PPPLoss, _require_finite
 
 
 class ContinuousPPPLoss(nn.Module):
-    """Return unweighted per-batch PPP, RCS L1 and signed Doppler L1 losses."""
+    """Return PPP, RCS L1 and signed Doppler L1 losses with configurable mark links.
+    """
 
     def __init__(self, out_img_size=(512, 512), normalize_by_gt_count=True, *, ppp_loss=None, mark_link="cubic"):
         if mark_link not in ("cubic", "identity"):

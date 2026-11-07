@@ -6,6 +6,17 @@ from radargen.losses import ContinuousPPPLoss, PPPLoss, masked_rcs_l1, masked_do
 
 
 class ContinuousLossTests(unittest.TestCase):
+    def test_rcs_l1_gradient_for_both_mark_links(self):
+        for link, doppler in (("cubic", 27.), ("identity", 3.)):
+            fields = torch.tensor([[[[0.]], [[-2.]], [[3.]]]], requires_grad=True)
+            points = torch.tensor([[0., 0., -5., 0.]])
+            losses = ContinuousPPPLoss((1, 1), mark_link=link)(
+                fields, points, torch.tensor([0]), point_limit=1.)
+            self.assertEqual(losses['rcs'].item(), 3.)
+            self.assertEqual(losses['doppler'].item(), doppler)
+            losses['rcs'].backward()
+            torch.testing.assert_close(fields.grad, torch.tensor([[[[0.]], [[(-12. if link == "cubic" else 1.)]], [[0.]]]]))
+
     def test_collision_preserves_marks_and_gradient(self):
         fields = torch.zeros(2, 3, 2, 2, requires_grad=True)
         points = torch.tensor([[0., 0., 2., -3.], [0., 0., -4., 5.]])

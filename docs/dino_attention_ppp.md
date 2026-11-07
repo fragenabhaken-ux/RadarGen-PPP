@@ -209,3 +209,11 @@ runs cannot accidentally resume under changed ordering. Legacy configs retain
 the ranged sampler unless they explicitly enable shuffling. The restarted DINO
 run starts fresh from the same historical DINO/LoRA source, not from the stopped
 production run; its artifacts are kept in a separate job directory.
+
+
+## Final head implementation
+
+The consolidated [final PPP head implementation](final_ppp_head.md) describes
+the selected shared head, the DiT bottleneck removal, DINO backbone unfreezing,
+patch-artifact changes, output-resolution comparison and epoch-wise shuffling.
+It records the final architecture choice alongside the historical experiments above.

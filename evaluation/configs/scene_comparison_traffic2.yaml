@@ -16,3 +16,6 @@ models:
   neck_finetuned:
     label: PPP Neck finetuned
     validation_config: evaluation/configs/PPP_validation_neck_finetune_2640537.yaml
+  dino_1024_2658284:
+    label: DINOv3 1024 (step 10000)
+    validation_config: evaluation/configs/PPP_validation_ss50_2658284.yaml

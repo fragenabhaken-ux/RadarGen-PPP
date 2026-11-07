@@ -74,12 +74,21 @@ def _export(path, provenance, records, produce):
             _array(group, 'points', points)
             group['points'].attrs.update(columns='x,y,rcs,doppler', units='m,m,dBsm,m/s')
             if heatmap is not None:
+                dense = heatmap if isinstance(heatmap, dict) else {}
+                heatmap = dense.get('heatmap', heatmap)
                 if np.asarray(heatmap).ndim != 2:
                     raise ValueError('Expected 2D heatmap')
                 _array(group, 'heatmap', heatmap)
                 group['heatmap'].attrs.update(kind=provenance['heatmap_kind'], origin='upper',
                     extent=[-provenance['coordinate_range'], provenance['coordinate_range'],
                             -provenance['coordinate_range'], provenance['coordinate_range']])
+                for mark in ('rcs', 'doppler'):
+                    if mark in dense:
+                        field = np.asarray(dense[mark]).squeeze()
+                        if field.shape != np.asarray(heatmap).shape:
+                            raise ValueError(f'{mark} grid does not match intensity grid')
+                        _array(group, mark, field)
+                        group[mark].attrs['units'] = 'dBsm' if mark == 'rcs' else 'm/s'
             f.flush()
             group.attrs['complete'] = True
             f.flush()
@@ -170,10 +179,24 @@ def predict_scene(config_path, models=None):
             with torch.inference_mode():
                 points, fields = predictor.predict(camera_dataset[index] if camera_dataset is not None else sample,
                                                    conditions)
-            heatmap = fields['cell_mass_grid'] if cfg['model'] == 'ppp' else fields[0]
-            return points, np.asarray(heatmap).squeeze()
+            if cfg['model'] == 'ppp':
+                return points, dict(heatmap=np.asarray(fields['cell_mass_grid']).squeeze(),
+                                    rcs=fields['rcs'], doppler=fields['doppler'])
+            return points, np.asarray(fields[0]).squeeze()
 
-        _export(destination, provenance, records, produce)
+        if cfg['model'] == 'ppp':
+            # Separate dense exports preserve compatibility with historical point exports.
+            dense_path = directory / 'predictions' / f'{name}_dense.h5'
+            _export(dense_path, dict(provenance, dense_fields_version=1), records, produce)
+
+            def from_dense(index, record):
+                with h5py.File(dense_path, 'r') as saved:
+                    group = saved['frames'][f"{record[1]['frame_index']:06d}"]
+                    return group['points'][()], group['heatmap'][()]
+
+            _export(destination, provenance, records, from_dense)
+        else:
+            _export(destination, provenance, records, produce)
         del predictor, camera_dataset
         gc.collect()
         if device.type == 'cuda':
@@ -234,7 +257,7 @@ def render_scene(scene_dir, models, output, *, marks=('doppler',), formats=('tar
                         if mark == 'heatmap':
                             mass = group['heatmap'][()]
                             artist = ax.imshow(np.maximum(mass, 0) ** gamma, origin='upper',
-                                               extent=(-radius, radius, -radius, radius), cmap='magma',
+                                               extent=(-radius, radius, -radius, radius), cmap='hot',
                                                vmin=0, vmax=max(maxima[col], 1e-12) ** gamma)
                             unit = 'Expected points/cell' if p['model'] == 'ppp' else 'Gaussianized blobs'
                             label = f'{unit} (power {gamma:g})'
@@ -276,3 +299,7 @@ def render_scene(scene_dir, models, output, *, marks=('doppler',), formats=('tar
             scene_dir=str(scene_dir.resolve()), models=models, marks=marks, formats=list(formats), fps=fps,
             dpi=dpi, gamma=gamma, doppler_limit=doppler_limit, rcs_limits=rcs_limits,
             export_signatures=[f.attrs['signature'] for f in files]), indent=2))
+    # Both video styles are part of the standard scene rendering workflow.
+    from evaluation.scene_overlay import render_overlays
+    render_overlays(scene_dir, models, output, formats=formats, fps=fps, dpi=dpi,
+                    gamma=gamma, doppler_limit=doppler_limit, rcs_limits=rcs_limits)

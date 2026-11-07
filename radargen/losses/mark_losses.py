@@ -1,4 +1,4 @@
-"""Masked physical-mark losses with cubic links and per-sample FP32 reduction."""
+"""Masked physical-mark losses with per-sample FP32 reduction."""
 
 from numbers import Real
 
@@ -27,10 +27,18 @@ def _masked_mean(error, point_mask):
 
 
 def masked_rcs_l1(raw_rcs: torch.Tensor, rcs_target: torch.Tensor, point_mask: torch.Tensor, *, mark_link="cubic") -> torch.Tensor:
-    """Masked |raw_rcs**3 - target_dBsm|; zero targets remain valid marks."""
+    """Masked physical RCS L1 error; cubic link by default, including zero targets."""
     _validate_inputs(raw_rcs, point_mask, rcs_target)
     with torch.autocast(device_type=raw_rcs.device.type, enabled=False):
         return _masked_mean(_physical_error(raw_rcs, rcs_target, mark_link), point_mask)
+
+
+def masked_rcs_l2(raw_rcs: torch.Tensor, rcs_target: torch.Tensor, point_mask: torch.Tensor) -> torch.Tensor:
+    """Mean squared RCS error with identity link and per-sample FP32 reduction."""
+    _validate_inputs(raw_rcs, point_mask, rcs_target)
+    with torch.autocast(device_type=raw_rcs.device.type, enabled=False):
+        error = _physical_error(raw_rcs, rcs_target, "identity")
+        return _masked_mean(error.square(), point_mask)
 
 
 def _period_tensor(period, prediction):

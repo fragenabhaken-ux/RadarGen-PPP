@@ -46,6 +46,27 @@ The immutable dataset index is reused and selected samples are checked on loadin
 
 ## Render without inference
 
+Scene rendering now always produces both the comparison layout and a separate
+three-panel overlay for each PPP model: intensity, Doppler, and RCS, left to
+right. Intensity uses white ground-truth points; mark panels colour ground-truth
+points with the same physical scale as the predicted dense map. Dense mark maps
+show the model's per-cell predictions, independent of sampled detections.
+
+Run prediction before rendering historical exports to create the new
+`predictions/<model>_dense.h5` files (intensity plus physical RCS and Doppler).
+Existing point exports remain reusable. Overlay outputs are saved under
+`<output-dir>/overlay_<model>/overlay.mp4` (or PNG/tar for those formats).
+Colour limits stay fixed across frames. Intensity is expected points per cell,
+displayed with the configured gamma. No other model appears in an overlay video.
+The legacy RadarGen model retains its comparison column; dense overlays apply
+to PPP models, including the final DiT and DINO checkpoints.
+
+For both final four-node checkpoints on all three previously used scenes:
+
+```bash
+sbatch jsc_jupiter/scene_video_dit_dino_4nodes.sbatch
+```
+
 Activate the repository environment, then run from the repository root:
 
 ```bash
@@ -77,3 +98,31 @@ fixed size and includes the source frame ID and elapsed reference-sensor time.
 `render_config.json` records the input export signatures and rendering options.
 Use a separate output directory per layout; rendering overwrites output filenames.
 To extract archived PNGs later: `tar -xf frames.tar`.
+
+## Four-node DINO versus DINO RCS L2 on all three scenes
+
+Render directly on the entry node from the saved exports; no inference or Slurm
+allocation is needed. Activate the repository environment and load FFmpeg first:
+
+```bash
+source jsc_jupiter/activate_jupiter.sh
+module load FFmpeg/.7.0.2
+export OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 MKL_NUM_THREADS=2
+for scene in bfe5157ddf0a47648a60d3e2737e8868 044c648ac12345f1aedf33c9f91cdc5a 9d1180d52b6a46328063042b8fb325de; do
+  scene_dir="/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/scene_comparisons/$scene"
+  python evaluation/scripts/scene_comparison.py render \
+    --scene-dir "$scene_dir" \
+    --models radargen dino_4nodes_2684031 dino_rcs_l2_2719598 \
+    --marks doppler rcs heatmap --formats mp4 --fps 10 \
+    --output-dir "$scene_dir/video_radargen_dino_2684031_dino_2719598"
+done
+```
+
+The prediction configurations for traffic scenes 1–3 are
+`evaluation/configs/scene_comparison_traffic{1,2,3}_dino_4nodes_rcs_l2.yaml`.
+Columns: ground truth, RadarGen, four-node DINO (2684031, step 9971),
+and DINO RCS L2 (2719598, step 9979). Rows: Doppler, RCS, heatmap.
+All temporal frames are included, at 10 fps. Matching exports are reused.
+The comparison video is saved under each scene directory as
+`video_radargen_dino_2684031_dino_2719598/comparison.mp4`;
+separate dense overlays are also generated for both DINO models.

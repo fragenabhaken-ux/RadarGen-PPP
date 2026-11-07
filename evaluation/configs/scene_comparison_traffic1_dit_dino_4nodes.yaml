@@ -1,0 +1,18 @@
+# All 194 temporal frames, not only annotated keyframes.
+scene: bfe5157ddf0a47648a60d3e2737e8868
+dataset_config: configs/PPP_train_neck.yaml
+output_root: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/scene_comparisons
+seed: 42
+device: cuda
+fps: 10
+# Model IDs are also export filenames. Use a new ID when changing a checkpoint.
+models:
+  radargen:
+    label: RadarGen
+    validation_config: evaluation/configs/RadarGen_validation.yaml
+  dit_4nodes_2684032:
+    label: DiT four-node final (step 17822)
+    validation_config: evaluation/configs/PPP_validation_ss50_2684032.yaml
+  dino_4nodes_2684031:
+    label: DINOv3 four-node final (step 9971)
+    validation_config: evaluation/configs/PPP_validation_ss50_2684031.yaml
