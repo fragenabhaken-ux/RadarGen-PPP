@@ -319,12 +319,20 @@ def write_reports(directory, rows, provenance, device='cpu'):
 
 def evaluate_samples(dataset, predictor, config, device, directory, provenance, *, resume=False):
     from radargen.training.tensorboard_logging import tensorboard_writer
-    with tensorboard_writer(directory, config.get('tensorboard', False)) as writer:
-        return _evaluate_samples(dataset, predictor, config, device, directory, provenance,
-                                 resume=resume, writer=writer)
+    from contextlib import ExitStack
+    from evaluation.prediction_archive import PredictionArchive
+    with ExitStack() as stack:
+        writer = stack.enter_context(tensorboard_writer(directory, config.get('tensorboard', False)))
+        archive = (stack.enter_context(PredictionArchive(directory, provenance, dataset, resume=resume))
+                   if config.get('save_predictions', False) else None)
+        rows = _evaluate_samples(dataset, predictor, config, device, directory, provenance,
+                                 resume=resume, writer=writer, archive=archive)
+        if archive is not None:
+            archive.finish(len(rows))
+        return rows
 
 
-def _evaluate_samples(dataset, predictor, config, device, directory, provenance, *, resume, writer):
+def _evaluate_samples(dataset, predictor, config, device, directory, provenance, *, resume, writer, archive=None):
     import h5py
     import torch
     from radargen.training.tensorboard_logging import log_scalars
@@ -338,6 +346,7 @@ def _evaluate_samples(dataset, predictor, config, device, directory, provenance,
     rows = []
     directory = Path(directory)
     records = directory / 'metrics.jsonl'
+    save_plots = config.get('save_plots', True)
     if resume and records.exists():
         rows = [json.loads(line) for line in records.read_text().splitlines()]
         if len(rows) > provenance['sample_count']:
@@ -348,8 +357,10 @@ def _evaluate_samples(dataset, predictor, config, device, directory, provenance,
                     or row['frame'] != int(expected['frame_index'])
                     or row['source'] != str(path)
                     or (row['plot'] and not (directory / row['plot']).is_file())
-                    or (not row['plot'] and writer is None)):
+                    or (not row['plot'] and writer is None and save_plots)):
                 raise ValueError('Saved records or plots do not match the selected inventory')
+            if archive is not None:
+                archive.verify(index, expected)
     write_reports(directory, rows, provenance, device)
     camera_dataset = None
     if getattr(predictor, 'raw_cameras', False):
@@ -417,47 +428,51 @@ def _evaluate_samples(dataset, predictor, config, device, directory, provenance,
                     # Compatibility name; now weighted per detection, not per occupied cell.
                     metrics[name + '_mae_at_target_cells'] = value
                 scene, frame = expected['scene_token'], int(expected['frame_index'])
-                plot = f'plots/{scene}/sample_{frame:06d}.png' if writer is None else ''
+                plot = f'plots/{scene}/sample_{frame:06d}.png' if save_plots and writer is None else ''
                 title = f"{config['model']} validation: {scene}, frame {frame}; GT={len(gt)}, generated={len(points)}"
                 if config['model'] == 'ppp':
                     mass = fields['cell_mass_grid']
                     analytic = compute_ppp_count_metrics(mass, gt, boxes, make_ppp_grid_xy(*mass.shape, dataset.point_limit))
                     metrics.update({k: v for k, v in analytic.items() if not isinstance(v, list)})
                     foreground.update({k: v for k, v in analytic.items() if isinstance(v, list)})
-                    fig = plot_ppp_prediction(sample, fields, points, dataset.point_limit, title, gamma=config.get('plot_gamma', 0.2))
-                else:
-                    fig = plot_radargen_prediction(gt_maps, fields, points, coordinate_range=dataset.point_limit, title=title)
-                    from matplotlib.colors import LinearSegmentedColormap
-                    ax = [axis for axis in fig.axes if axis.get_title()][6]
-                    ax.clear()
-                    image = ax.imshow(fields[0], origin='upper',
-                        extent=(-dataset.point_limit, dataset.point_limit,
-                                -dataset.point_limit, dataset.point_limit),
-                        cmap=LinearSegmentedColormap.from_list('black_red', ['black', 'red']),
-                        vmin=0, interpolation='nearest')
-                    ax.scatter(gt[:, 0], gt[:, 1], s=5, color='lightskyblue', label='GT points')
-                    ax.legend(loc='upper right')
-                    ax.set_title('Predicted PD with GT points')
-                    ax.set_xlim(-dataset.point_limit, dataset.point_limit)
-                    ax.set_ylim(-dataset.point_limit, dataset.point_limit)
-                    ax.set_aspect('equal')
-                    ax.set_xlabel('x (m)')
-                    ax.set_ylabel('y (m)')
-                    fig.colorbar(image, ax=ax, label='PD')
-                try:
-                    if writer is None:
-                        destination = directory / plot
-                        destination.parent.mkdir(parents=True, exist_ok=True)
-                        fig.savefig(destination, dpi=config.get('plot_dpi', 110), bbox_inches='tight')
+                if save_plots:
+                    if config['model'] == 'ppp':
+                        fig = plot_ppp_prediction(sample, fields, points, dataset.point_limit, title, gamma=config.get('plot_gamma', 0.2))
                     else:
-                        writer.add_figure('validation/prediction', fig, index, close=False)
-                finally:
-                    fig.clear()
+                        fig = plot_radargen_prediction(gt_maps, fields, points, coordinate_range=dataset.point_limit, title=title)
+                        from matplotlib.colors import LinearSegmentedColormap
+                        ax = [axis for axis in fig.axes if axis.get_title()][6]
+                        ax.clear()
+                        image = ax.imshow(fields[0], origin='upper',
+                            extent=(-dataset.point_limit, dataset.point_limit,
+                                    -dataset.point_limit, dataset.point_limit),
+                            cmap=LinearSegmentedColormap.from_list('black_red', ['black', 'red']),
+                            vmin=0, interpolation='nearest')
+                        ax.scatter(gt[:, 0], gt[:, 1], s=5, color='lightskyblue', label='GT points')
+                        ax.legend(loc='upper right')
+                        ax.set_title('Predicted PD with GT points')
+                        ax.set_xlim(-dataset.point_limit, dataset.point_limit)
+                        ax.set_ylim(-dataset.point_limit, dataset.point_limit)
+                        ax.set_aspect('equal')
+                        ax.set_xlabel('x (m)')
+                        ax.set_ylabel('y (m)')
+                        fig.colorbar(image, ax=ax, label='PD')
+                    try:
+                        if writer is None:
+                            destination = directory / plot
+                            destination.parent.mkdir(parents=True, exist_ok=True)
+                            fig.savefig(destination, dpi=config.get('plot_dpi', 110), bbox_inches='tight')
+                        else:
+                            writer.add_figure('validation/prediction', fig, index, close=False)
+                    finally:
+                        fig.clear()
                 status = 'ok' if len(gt) and len(points) else 'empty_cloud'
                 row = json_values(dict(index=index, scene=scene, frame=frame, source=str(path),
                     model=config['model'], checkpoint=config['checkpoint_path'], seed=config['seed'],
                     status=status, plot=plot, metrics=metrics,
                     foreground_box_count=len(boxes), foreground=foreground, foreground_points=foreground_points))
+                if archive is not None:
+                    archive.write(index, expected, path, points, fields)
                 stream.write(json.dumps(row, allow_nan=False) + '\n')
                 stream.flush()
                 rows.append(row)

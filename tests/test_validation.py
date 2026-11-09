@@ -206,6 +206,52 @@ class ValidationChecks(unittest.TestCase):
                 self.assertEqual(len(restored), 2)
                 self.assertEqual(len((output / 'metrics.jsonl').read_text().splitlines()), 2)
 
+    def test_no_plots_archive_and_partial_resume(self):
+        for model in ('ppp', 'radargen'):
+            with self.subTest(model=model), TemporaryDirectory() as directory:
+                dataset = ToyDataset(directory)
+                output = Path(directory) / 'results'
+                output.mkdir()
+                config = dict(model=model, seed=42, checkpoint_path='toy.pth',
+                              save_plots=False, save_predictions=True)
+                provenance = dict(config, sample_count=2, selected_indices=[1, 0])
+                with patch('radargen.training.radargen_ppp_dataset.validate_ppp_metadata'), patch(
+                        'evaluation.validation.plot_ppp_prediction', side_effect=AssertionError('No figures')), patch(
+                        'radargen.visualization.plot_radargen_prediction', side_effect=AssertionError('No figures')):
+                    rows = evaluate_samples(dataset, ToyPredictor(model), config,
+                                            torch.device('cpu'), output, provenance)
+                self.assertFalse(list(output.rglob('*.png')))
+                self.assertTrue(all(row['plot'] == '' for row in rows))
+                with h5py.File(output / 'predictions.h5', 'r') as h:
+                    self.assertTrue(h.attrs['complete'])
+                    self.assertEqual(h['index/frame'][()].tolist(), [1, 0])
+                    first = h['scenes/scene/frames/000001']
+                    self.assertTrue(first.attrs['complete'])
+                    self.assertEqual(first['points'].compression, 'lzf')
+                    self.assertEqual(first['points'].dtype, np.dtype('float64'))
+                    np.testing.assert_array_equal(first['points'][()], [[0., 0., 1., -1.], [2., 2., 2., 2.]])
+                    self.assertEqual(h['scenes/scene/frames/000000/points'].shape, (0, 4))
+                    name = 'cell_mass_grid' if model == 'ppp' else 'point_density'
+                    np.testing.assert_array_equal(first['fields/rcs'][()], np.ones((8, 8)))
+                    self.assertEqual(first[f'fields/{name}'].shape, (8, 8))
+                restarted = ToyPredictor(model)
+                restored = evaluate_samples(dataset, restarted, config, torch.device('cpu'),
+                                            output, provenance, resume=True)
+                self.assertEqual(restarted.total_calls, 0)
+                self.assertEqual(restored, rows)
+                # Simulate a crash after saving a prediction but before committing its metrics.
+                (output / 'metrics.jsonl').write_text(json.dumps(rows[0]) + '\n')
+                with patch('radargen.training.radargen_ppp_dataset.validate_ppp_metadata'):
+                    restored = evaluate_samples(dataset, ToyPredictor(model), config,
+                                                torch.device('cpu'), output, provenance, resume=True)
+                self.assertEqual(len(restored), 2)
+                with h5py.File(output / 'predictions.h5', 'r+') as h:
+                    self.assertTrue(h.attrs['complete'])
+                    del h['scenes/scene/frames/000001']
+                with self.assertRaisesRegex(ValueError, 'Missing or incomplete archived prediction'):
+                    evaluate_samples(dataset, ToyPredictor(model), config, torch.device('cpu'),
+                                     output, provenance, resume=True)
+
     def test_tensorboard_replaces_png_and_allows_resume(self):
         from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
         for model in ('ppp', 'radargen'):

@@ -1,0 +1,116 @@
+{
+  "training_run": 2773475,
+  "title": "# DINO optimizer-resume: all-checkpoint SS50 comparison",
+  "selection_metric": "distance_attr_f1",
+  "single_table": true,
+  "entries": [
+    {
+      "label": "DINO previous four-node final (2684031)",
+      "kind": "baseline",
+      "epoch": 45,
+      "step": 9971,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684031_PPP_continue_dino_2658284_4nodes/checkpoints/epoch_45_step_9971.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2701615_PPP_validation_ss50_2684031",
+      "reused": true
+    },
+    {
+      "label": "DINO resume step 10000",
+      "kind": "finetuned",
+      "epoch": 45,
+      "step": 10000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2773475_PPP_resume_dino_2684031_optimizer_4nodes/checkpoints/epoch_45_step_10000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dino_2773475_checkpoint_sweep/step_010000",
+      "reused": false
+    },
+    {
+      "label": "DINO resume step 11000",
+      "kind": "finetuned",
+      "epoch": 50,
+      "step": 11000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2773475_PPP_resume_dino_2684031_optimizer_4nodes/checkpoints/epoch_50_step_11000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dino_2773475_checkpoint_sweep/step_011000",
+      "reused": false
+    },
+    {
+      "label": "DINO resume step 12000",
+      "kind": "finetuned",
+      "epoch": 55,
+      "step": 12000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2773475_PPP_resume_dino_2684031_optimizer_4nodes/checkpoints/epoch_55_step_12000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dino_2773475_checkpoint_sweep/step_012000",
+      "reused": false
+    },
+    {
+      "label": "DINO resume step 13000",
+      "kind": "finetuned",
+      "epoch": 59,
+      "step": 13000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2773475_PPP_resume_dino_2684031_optimizer_4nodes/checkpoints/epoch_59_step_13000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dino_2773475_checkpoint_sweep/step_013000",
+      "reused": false
+    },
+    {
+      "label": "DINO resume step 14000",
+      "kind": "finetuned",
+      "epoch": 64,
+      "step": 14000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2773475_PPP_resume_dino_2684031_optimizer_4nodes/checkpoints/epoch_64_step_14000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dino_2773475_checkpoint_sweep/step_014000",
+      "reused": false
+    },
+    {
+      "label": "DINO resume step 15000",
+      "kind": "finetuned",
+      "epoch": 68,
+      "step": 15000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2773475_PPP_resume_dino_2684031_optimizer_4nodes/checkpoints/epoch_68_step_15000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dino_2773475_checkpoint_sweep/step_015000",
+      "reused": false
+    },
+    {
+      "label": "DINO resume step 16000",
+      "kind": "finetuned",
+      "epoch": 73,
+      "step": 16000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2773475_PPP_resume_dino_2684031_optimizer_4nodes/checkpoints/epoch_73_step_16000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dino_2773475_checkpoint_sweep/step_016000",
+      "reused": false
+    },
+    {
+      "label": "DINO resume step 17000",
+      "kind": "finetuned",
+      "epoch": 77,
+      "step": 17000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2773475_PPP_resume_dino_2684031_optimizer_4nodes/checkpoints/epoch_77_step_17000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dino_2773475_checkpoint_sweep/step_017000",
+      "reused": false
+    },
+    {
+      "label": "DINO resume step 18000",
+      "kind": "finetuned",
+      "epoch": 82,
+      "step": 18000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2773475_PPP_resume_dino_2684031_optimizer_4nodes/checkpoints/epoch_82_step_18000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dino_2773475_checkpoint_sweep/step_018000",
+      "reused": false
+    },
+    {
+      "label": "DINO resume step 19000",
+      "kind": "finetuned",
+      "epoch": 87,
+      "step": 19000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2773475_PPP_resume_dino_2684031_optimizer_4nodes/checkpoints/epoch_87_step_19000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dino_2773475_checkpoint_sweep/step_019000",
+      "reused": false
+    },
+    {
+      "label": "DINO resume step 19914",
+      "kind": "finetuned",
+      "epoch": 91,
+      "step": 19914,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2773475_PPP_resume_dino_2684031_optimizer_4nodes/checkpoints/epoch_91_step_19914.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2788375_PPP_validation_ss50_2773475",
+      "reused": true
+    }
+  ]
+}

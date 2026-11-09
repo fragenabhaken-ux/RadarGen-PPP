@@ -71,7 +71,7 @@ def prune_ppp_checkpoints(directory, keep_last, newest):
 
 
 def load_ppp_checkpoint(checkpoint_path, training_model, optimizer=None, lr_scheduler=None,
-                        resume_optimizer=True, resume_lr_scheduler=True, *, contract=None, rank=0):
+                        resume_optimizer=True, resume_lr_scheduler=True, *, contract=None, rank=0, replace_scheduler=False):
     """Restore exact wrapper keys and requested training state; return baseline tuple.
 
     Returned RNG dictionary also includes ppp_training progress/contract metadata.
@@ -89,7 +89,18 @@ def load_ppp_checkpoint(checkpoint_path, training_model, optimizer=None, lr_sche
         raise ValueError('Legacy PPP checkpoint has no validated manifest identity; exact resume into '
                          'manifest training is unsupported. Keep the original diagnostic workflow/checkpoint '
                          'with its original checkout, or start a fresh manifest-backed training run; no automatic migration.')
-    if contract is not None and metadata['contract'] != contract:
+    if replace_scheduler:
+        if (contract is None or optimizer is None or lr_scheduler is None or not resume_optimizer
+                or metadata.get('contract', {}).get('lr_schedule') != 'constant'
+                or contract.get('lr_schedule') != 'cosine_updates'
+                or contract.get('lr_args', {}).get('num_warmup_steps', 0) != 0):
+            raise ValueError('Scheduler replacement requires constant-to-cosine resume with optimizer state and zero warmup')
+        schedule_keys = {'lr_schedule', 'lr_args', 'scheduler_total_updates'}
+        saved_contract = {k: v for k, v in metadata['contract'].items() if k not in schedule_keys}
+        requested_contract = {k: v for k, v in contract.items() if k not in schedule_keys}
+        if saved_contract != requested_contract:
+            raise ValueError('PPP scheduler replacement cannot change the remaining training/data contract')
+    elif contract is not None and metadata['contract'] != contract:
         raise ValueError('PPP resume training/data contract differs from saved checkpoint')
     saved, expected = state['state_dict'], training_model.state_dict()
     missing, unexpected = sorted(set(expected)-set(saved)), sorted(set(saved)-set(expected))
@@ -98,7 +109,7 @@ def load_ppp_checkpoint(checkpoint_path, training_model, optimizer=None, lr_sche
         raise ValueError(f'PPP checkpoint mismatch: missing={missing}, unexpected={unexpected}')
     if optimizer is not None and resume_optimizer and 'optimizer' not in state:
         raise ValueError('PPP checkpoint missing optimizer state')
-    if lr_scheduler is not None and resume_lr_scheduler and 'scheduler' not in state:
+    if lr_scheduler is not None and resume_lr_scheduler and not replace_scheduler and 'scheduler' not in state:
         raise ValueError('PPP checkpoint missing scheduler state')
     ranks = state['rank_rng_states']
     if rank >= len(ranks):
@@ -106,7 +117,16 @@ def load_ppp_checkpoint(checkpoint_path, training_model, optimizer=None, lr_sche
     training_model.load_state_dict(saved, strict=True)
     if optimizer is not None and resume_optimizer:
         optimizer.load_state_dict(state['optimizer'])
-    if lr_scheduler is not None and resume_lr_scheduler:
+    if replace_scheduler:
+        # Keep the newly constructed scheduler at local update zero. Loading the
+        # optimizer above restores moments/counters and its saved parameter-group LR.
+        # Apply the new schedule's starting LR without touching optimizer state.
+        if lr_scheduler.last_epoch != 0:
+            raise ValueError('Replacement scheduler must be freshly constructed at local update zero')
+        for group, lr in zip(optimizer.param_groups, lr_scheduler.get_last_lr()):
+            group['lr'] = lr
+        logging.getLogger(__name__).info('Restored optimizer and progress; new cosine scheduler starts at update zero without warmup')
+    elif lr_scheduler is not None and resume_lr_scheduler:
         lr_scheduler.load_state_dict(state['scheduler'])
     rng = dict(ranks[rank], ppp_training=metadata)
     return state['epoch'], missing, unexpected, rng

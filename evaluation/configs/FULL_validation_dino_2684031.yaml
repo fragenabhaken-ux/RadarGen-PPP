@@ -1,0 +1,13 @@
+# All annotated validation keyframes, lossless predictions, no figures.
+dataset_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684031_PPP_continue_dino_2658284_4nodes/submitted_config.yaml
+model_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684031_PPP_continue_dino_2658284_4nodes/submitted_config.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+model: ppp
+checkpoint_path: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684031_PPP_continue_dino_2658284_4nodes/checkpoints/epoch_45_step_9971.pth
+max_samples: null
+save_plots: false
+save_predictions: true
+tensorboard: false
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_validation_20261108/dino_2684031

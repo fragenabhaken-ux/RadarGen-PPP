@@ -126,3 +126,13 @@ All temporal frames are included, at 10 fps. Matching exports are reused.
 The comparison video is saved under each scene directory as
 `video_radargen_dino_2684031_dino_2719598/comparison.mp4`;
 separate dense overlays are also generated for both DINO models.
+
+## RadarGen versus four-node DINO versus latest DINO final
+
+Rendered directly on entry node `jpbl-s02-03` from complete saved exports; no Slurm submission or model inference. The latest DINO final is optimizer-resume run **2773475** (step 19914), compared with four-node DINO **2684031** and RadarGen. Columns are ground truth, RadarGen, four-node DINO, latest DINO final; rows are Doppler, RCS, and heatmap. Each of the three traffic scenes has 194 frames at 10 fps (19.4 seconds).
+
+- Traffic scene 1: [comparison video](/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/scene_comparisons/bfe5157ddf0a47648a60d3e2737e8868/video_radargen_dino_2684031_dino_2773475/comparison.mp4).
+- Traffic scene 2: [comparison video](/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/scene_comparisons/044c648ac12345f1aedf33c9f91cdc5a/video_radargen_dino_2684031_dino_2773475/comparison.mp4).
+- Traffic scene 3: [comparison video](/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/scene_comparisons/9d1180d52b6a46328063042b8fb325de/video_radargen_dino_2684031_dino_2773475/comparison.mp4).
+
+Each output directory also contains separate `overlay_dino_4nodes_2684031/overlay.mp4` and `overlay_dino_2773475/overlay.mp4` videos, plus render settings and export signatures in `render_config.json`.

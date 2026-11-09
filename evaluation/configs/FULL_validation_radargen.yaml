@@ -1,0 +1,16 @@
+# All annotated validation keyframes, lossless predictions, no figures.
+dataset_config: configs/PPP_train.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+text_model_dir: /e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it
+model: radargen
+model_config: configs/RadarGen_validation_inference.yaml
+checkpoint_path: /e/project1/nxtaim-1/huber7/pretrained/RadarGen_600M_512px_TS/RadarGen_600M_512px_TS.safetensors
+num_inference_steps: 20
+
+max_samples: null
+save_plots: false
+save_predictions: true
+tensorboard: false
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_validation_20261108/radargen

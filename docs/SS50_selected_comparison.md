@@ -456,3 +456,89 @@ Sources:
 - 4-node DINOv3 step 9000 (2684031): [summary](/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2701633_PPP_validation_ss50_dino_step9000/summary.json).
 - DiT RCS L2 final (2719596): [summary](/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2735087_PPP_validation_ss50_2719596/summary.json).
 - DINO RCS L2 final (2719598): [summary](/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2735088_PPP_validation_ss50_2719598/summary.json).
+
+## Latest optimizer-resume runs versus four-node runs and RadarGen
+
+Both optimizer-resume final runs evaluated the same 50 frames in the same order as their four-node baselines and RadarGen (verified). Mean ± population standard deviation; bold marks best and underline second-best distinct values using unrounded metrics. All foreground, per-class MMD, count, mark-error, and runtime metrics are included.
+
+### DINO: optimizer-resume final versus four-node versus RadarGen
+
+| Scope | Metric | DINO optimizer resume final (2773475) | 4-node DINO (2684031) | RadarGen |
+| --- | --- | --- | --- | --- |
+| Entire Area | CD Loc. ↓ | 1.697 ± 0.411 | **1.641 ± 0.392** | <u>1.685 ± 0.381</u> |
+| Entire Area | CD Full ↓ | <u>0.038 ± 0.008</u> | **0.037 ± 0.007** | 0.040 ± 0.008 |
+| Entire Area | IoU@1m ↑ | 0.306 ± 0.113 | **0.316 ± 0.113** | <u>0.312 ± 0.105</u> |
+| Entire Area | DA Recall ↑ | 0.278 ± 0.111 | <u>0.296 ± 0.111</u> | **0.302 ± 0.122** |
+| Entire Area | DA Precision ↑ | <u>0.307 ± 0.121</u> | **0.312 ± 0.113** | 0.197 ± 0.099 |
+| Entire Area | DA F1 ↑ | <u>0.290 ± 0.116</u> | **0.301 ± 0.111** | 0.234 ± 0.107 |
+| Entire Area | MMD Loc. ↓ | **0.045 ± 0.040** | <u>0.049 ± 0.044</u> | 0.064 ± 0.058 |
+| Entire Area | MMD RCS ↓ | <u>0.106 ± 0.095</u> | 0.138 ± 0.099 | **0.097 ± 0.162** |
+| Entire Area | MMD Doppler ↓ | **0.143 ± 0.331** | <u>0.150 ± 0.333</u> | 0.357 ± 0.958 |
+| Foreground | CD Loc. ↓ | <u>1.027 ± 0.649</u> | **0.962 ± 0.624** | 1.032 ± 0.713 |
+| Foreground | CD Full ↓ | <u>0.060 ± 0.039</u> | **0.057 ± 0.042** | 0.071 ± 0.051 |
+| Foreground | Density Similarity ↑ | 0.417 ± 0.359 | <u>0.429 ± 0.366</u> | **0.450 ± 0.347** |
+| Foreground | Hit Rate ↑ | 0.736 | <u>0.751</u> | **0.781** |
+| Additional | GT point count | 1095.540 ± 320.639 | 1095.540 ± 320.639 | 1095.540 ± 320.639 |
+| Additional | Generated point count | 983.700 ± 285.639 | 1027.580 ± 296.780 | 1717.860 ± 462.256 |
+| Additional | Point-count absolute error ↓ | <u>172.320 ± 147.856</u> | **149.880 ± 156.189** | 623.040 ± 441.057 |
+| Additional | PPP expected total count | 990.822 ± 283.798 | 1027.576 ± 291.684 | — |
+| Additional | PPP total-count absolute error ↓ | <u>167.971 ± 150.400</u> | **149.640 ± 150.669** | — |
+| Additional | RCS MAE at target cells ↓ | <u>5.019 ± 1.877</u> | **4.788 ± 1.755** | 6.093 ± 1.993 |
+| Additional | Doppler MAE at target cells ↓ | <u>1.831 ± 1.342</u> | **1.757 ± 1.210** | 3.142 ± 1.766 |
+| Additional foreground | PPP expected count per box | 4.755 ± 7.502 | 4.819 ± 6.993 | — |
+| Additional foreground | PPP expected-count absolute error per box ↓ | <u>5.264 ± 7.883</u> | **5.168 ± 7.892** | — |
+| Additional foreground | PPP hit probability (GT-positive boxes) ↑ | <u>0.732 ± 0.316</u> | **0.767 ± 0.292** | — |
+| Foreground (car) | MMD Loc. ↓ | 0.168 | <u>0.110</u> | **0.072** |
+| Foreground (car) | MMD RCS ↓ | 0.072 | <u>0.036</u> | **0.012** |
+| Foreground (car) | MMD Doppler ↓ | 0.152 | <u>0.091</u> | **0.046** |
+| Foreground (truck) | MMD Loc. ↓ | 0.206 | **0.081** | <u>0.101</u> |
+| Foreground (truck) | MMD RCS ↓ | <u>0.136</u> | 0.252 | **0.020** |
+| Foreground (truck) | MMD Doppler ↓ | 0.282 | <u>0.228</u> | **0.108** |
+| Foreground (trailer) | MMD Loc. ↓ | <u>0.018</u> | **0.008** | 0.032 |
+| Foreground (trailer) | MMD RCS ↓ | 0.502 | <u>0.469</u> | **0.049** |
+| Foreground (trailer) | MMD Doppler ↓ | 0.531 | <u>0.395</u> | **0.343** |
+| Runtime | Inference time (s/frame) ↓ | **0.258 ± 0.001** | <u>0.260 ± 0.001</u> | 1.185 ± 0.028 |
+| Runtime | Median inference time (s/frame) ↓ | **0.259** | <u>0.260</u> | 1.178 |
+
+Sources: [DINO optimizer resume final (2773475)](/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2788375_PPP_validation_ss50_2773475/summary.json), [4-node DINO (2684031)](/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2701615_PPP_validation_ss50_2684031/summary.json), [RadarGen](/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2404702_RadarGen_validation/summary.json).
+
+### DiT: optimizer-resume final versus four-node versus RadarGen
+
+| Scope | Metric | DiT optimizer resume final (2773477) | 4-node DiT (2684032) | RadarGen |
+| --- | --- | --- | --- | --- |
+| Entire Area | CD Loc. ↓ | 1.704 ± 0.460 | <u>1.700 ± 0.428</u> | **1.685 ± 0.381** |
+| Entire Area | CD Full ↓ | <u>0.042 ± 0.009</u> | 0.042 ± 0.010 | **0.040 ± 0.008** |
+| Entire Area | IoU@1m ↑ | <u>0.298 ± 0.113</u> | 0.294 ± 0.110 | **0.312 ± 0.105** |
+| Entire Area | DA Recall ↑ | <u>0.247 ± 0.116</u> | 0.239 ± 0.111 | **0.302 ± 0.122** |
+| Entire Area | DA Precision ↑ | <u>0.278 ± 0.127</u> | **0.279 ± 0.129** | 0.197 ± 0.099 |
+| Entire Area | DA F1 ↑ | **0.258 ± 0.121** | <u>0.255 ± 0.119</u> | 0.234 ± 0.107 |
+| Entire Area | MMD Loc. ↓ | <u>0.065 ± 0.063</u> | 0.067 ± 0.063 | **0.064 ± 0.058** |
+| Entire Area | MMD RCS ↓ | <u>0.248 ± 0.217</u> | 0.268 ± 0.232 | **0.097 ± 0.162** |
+| Entire Area | MMD Doppler ↓ | **0.269 ± 0.580** | <u>0.274 ± 0.584</u> | 0.357 ± 0.958 |
+| Foreground | CD Loc. ↓ | 1.144 ± 0.774 | <u>1.090 ± 0.768</u> | **1.032 ± 0.713** |
+| Foreground | CD Full ↓ | <u>0.063 ± 0.047</u> | **0.061 ± 0.040** | 0.071 ± 0.051 |
+| Foreground | Density Similarity ↑ | 0.354 ± 0.359 | <u>0.366 ± 0.353</u> | **0.450 ± 0.347** |
+| Foreground | Hit Rate ↑ | 0.669 | <u>0.706</u> | **0.781** |
+| Additional | GT point count | 1095.540 ± 320.639 | 1095.540 ± 320.639 | 1095.540 ± 320.639 |
+| Additional | Generated point count | 980.380 ± 305.957 | 949.120 ± 292.826 | 1717.860 ± 462.256 |
+| Additional | Point-count absolute error ↓ | **210.760 ± 182.916** | <u>226.340 ± 184.591</u> | 623.040 ± 441.057 |
+| Additional | PPP expected total count | 976.778 ± 300.772 | 947.683 ± 289.272 | — |
+| Additional | PPP total-count absolute error ↓ | **211.093 ± 179.453** | <u>226.412 ± 184.251</u> | — |
+| Additional | RCS MAE at target cells ↓ | <u>4.806 ± 1.826</u> | **4.704 ± 1.762** | 6.093 ± 1.993 |
+| Additional | Doppler MAE at target cells ↓ | **2.027 ± 1.386** | <u>2.028 ± 1.380</u> | 3.142 ± 1.766 |
+| Additional foreground | PPP expected count per box | 4.821 ± 8.810 | 4.794 ± 8.744 | — |
+| Additional foreground | PPP expected-count absolute error per box ↓ | **6.091 ± 8.703** | <u>6.110 ± 8.745</u> | — |
+| Additional foreground | PPP hit probability (GT-positive boxes) ↑ | **0.717 ± 0.295** | <u>0.717 ± 0.291</u> | — |
+| Foreground (car) | MMD Loc. ↓ | <u>0.159</u> | 0.203 | **0.072** |
+| Foreground (car) | MMD RCS ↓ | <u>0.027</u> | 0.081 | **0.012** |
+| Foreground (car) | MMD Doppler ↓ | <u>0.082</u> | 0.127 | **0.046** |
+| Foreground (truck) | MMD Loc. ↓ | 0.196 | **0.044** | <u>0.101</u> |
+| Foreground (truck) | MMD RCS ↓ | <u>0.097</u> | 0.376 | **0.020** |
+| Foreground (truck) | MMD Doppler ↓ | **0.100** | 0.247 | <u>0.108</u> |
+| Foreground (trailer) | MMD Loc. ↓ | 0.085 | <u>0.074</u> | **0.032** |
+| Foreground (trailer) | MMD RCS ↓ | <u>0.327</u> | 0.799 | **0.049** |
+| Foreground (trailer) | MMD Doppler ↓ | 1.104 | <u>0.586</u> | **0.343** |
+| Runtime | Inference time (s/frame) ↓ | <u>0.178 ± 0.004</u> | **0.170 ± 0.002** | 1.185 ± 0.028 |
+| Runtime | Median inference time (s/frame) ↓ | <u>0.179</u> | **0.169** | 1.178 |
+
+Sources: [DiT optimizer resume final (2773477)](/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2788376_PPP_validation_ss50_2773477/summary.json), [4-node DiT (2684032)](/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2701616_PPP_validation_ss50_2684032/summary.json), [RadarGen](/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2404702_RadarGen_validation/summary.json).

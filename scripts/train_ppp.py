@@ -301,6 +301,8 @@ def _run_training(config, options, *, components, dataset, text_provider, output
         raise ValueError('--init-from, --init-backbone-from, --init-dino-from and resume are mutually exclusive')
     if resume == 'latest':
         resume = str(Path(config.work_dir)/'checkpoints/latest.pth')
+    if getattr(options, 'replace_scheduler', False) and not resume:
+        raise ValueError('--replace-scheduler requires --resume')
     fresh_config = copy.deepcopy(config)
     fresh_config.resume_from = fresh_config.model.resume_from = None
     startup_log("dataset construction begin", injected=dataset is not None)
@@ -434,7 +436,8 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     resume_rng = None
     if resume:
         _, _, _, resume_rng = load_ppp_checkpoint(resume, model, optimizer, scheduler,
-                                                  contract=contract, rank=accelerator.process_index)
+                                                  contract=contract, rank=accelerator.process_index,
+                                                  replace_scheduler=getattr(options, 'replace_scheduler', False))
         progress = dict(resume_rng['ppp_training']['progress'])
         if (not all(isinstance(progress.get(k), int) and progress[k] >= 0
                     for k in ('epoch', 'batch_in_epoch', 'global_step'))
@@ -861,6 +864,7 @@ def main() -> int:
     parser.add_argument('--init-dino-from', help='Transfer DINO PPP features; last_concat transfers backbone/adapters only')
     parser.add_argument('--init-backbone-from', help='Load a legacy PPP DiT backbone into the wide decoder variant')
     parser.add_argument('--init-from', help='Load PPP model weights only; start fresh optimizer, scheduler and progress')
+    parser.add_argument('--replace-scheduler', action='store_true', help='Resume optimizer/progress but replace a constant scheduler with a fresh cosine_updates schedule without warmup')
     parser.add_argument('--resume', help='Resume a matching PPP training checkpoint or latest')
     parser.add_argument('--null-embed-path', default='output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth')
     parser.add_argument('--text-model-dir', default='/e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it')
