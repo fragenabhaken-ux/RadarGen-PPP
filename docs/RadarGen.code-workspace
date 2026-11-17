@@ -1,0 +1,26 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"path": "../radar_detection/.git"
+		},
+		{
+			"path": "../radar_detection/data"
+		},
+		{
+			"path": "../radar_detection/docker"
+		},
+		{
+			"path": "../radar_detection/docs"
+		},
+		{
+			"path": "../radar_detection/pcdet"
+		},
+		{
+			"path": "../radar_detection/tools"
+		}
+	],
+	"settings": {}
+}

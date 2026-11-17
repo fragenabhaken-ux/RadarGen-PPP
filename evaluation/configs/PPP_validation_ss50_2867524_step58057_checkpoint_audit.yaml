@@ -1,0 +1,19 @@
+# Fixed SS50, final ablation checkpoint; serial entry-node evaluation.
+dataset_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2867524_ablation_dit_dcae_no_bottleneck_resume_4nodes/submitted_config.yaml
+model_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2867524_ablation_dit_dcae_no_bottleneck_resume_4nodes/submitted_config.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+max_samples: 50
+model: ppp
+reference_validation_records: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2455164_PPP_validation_dinov3_2438929/metrics.jsonl
+checkpoint_path: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2867524_ablation_dit_dcae_no_bottleneck_resume_4nodes/checkpoints/epoch_44_step_58057.pth
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_ablation_dit_dcae_no_bottleneck_2867524_step58057_checkpoint_audit
+save_plots: false
+save_predictions: false
+tensorboard: false
+text_model_dir: /e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it
+sana_checkpoint_path: /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+null_embed_path: output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth
+plot_dpi: 110
+plot_gamma: 0.2

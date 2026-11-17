@@ -204,7 +204,8 @@ def predict_scene(config_path, models=None):
 
 
 def render_scene(scene_dir, models, output, *, marks=('doppler',), formats=('tar',), fps=None,
-                 dpi=110, gamma=0.2, doppler_limit=30., rcs_limits=(-20., 66.)):
+                 dpi=110, gamma=0.2, doppler_limit=30., rcs_limits=(-20., 66.), skip_overlays=False,
+                 model_labels=None):
     """Render saved exports only; no model imports or inference."""
     import matplotlib
     matplotlib.use('Agg')
@@ -224,6 +225,11 @@ def render_scene(scene_dir, models, output, *, marks=('doppler',), formats=('tar
         files = [stack.enter_context(h5py.File(scene_dir / 'ground_truth.h5', 'r'))]
         files += [stack.enter_context(h5py.File(scene_dir / 'predictions' / f'{identifier(m)}.h5', 'r')) for m in models]
         provenance = [json.loads(f.attrs['provenance']) for f in files]
+        if model_labels is not None:
+            if len(model_labels) != len(models):
+                raise ValueError('Provide exactly one display label per selected model')
+            for item, label in zip(provenance[1:], model_labels):
+                item['label'] = label
         keys = sorted(files[0]['frames'])
         for f, p in zip(files, provenance):
             if not f.attrs.get('complete') or sorted(f['frames']) != keys or any(
@@ -297,8 +303,11 @@ def render_scene(scene_dir, models, output, *, marks=('doppler',), formats=('tar
                     raise RuntimeError('ffmpeg failed')
         (output / 'render_config.json').write_text(json.dumps(dict(
             scene_dir=str(scene_dir.resolve()), models=models, marks=marks, formats=list(formats), fps=fps,
+            model_labels=model_labels,
             dpi=dpi, gamma=gamma, doppler_limit=doppler_limit, rcs_limits=rcs_limits,
             export_signatures=[f.attrs['signature'] for f in files]), indent=2))
+    if skip_overlays:
+        return
     # Both video styles are part of the standard scene rendering workflow.
     from evaluation.scene_overlay import render_overlays
     render_overlays(scene_dir, models, output, formats=formats, fps=fps, dpi=dpi,

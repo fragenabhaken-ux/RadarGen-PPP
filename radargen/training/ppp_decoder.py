@@ -51,6 +51,52 @@ class PPPDecoder(nn.Module):
         return self.decoder(latent)
 
 
+def adapt_ppp_decoder_input(decoder, in_channels, logger):
+    """Replace only the native 32→1024 residual input with a full-width 3×3 conv."""
+    from diffusion.model.dc_ae.efficientvit.models.efficientvit.dc_ae import build_decoder_project_in_block
+    from diffusion.model.dc_ae.efficientvit.models.nn.ops import (
+        ChannelDuplicatingPixelUnshuffleUpSampleLayer, ConvLayer, ResidualBlock,
+    )
+    block = decoder.project_in
+    if (not isinstance(block, ResidualBlock) or not isinstance(block.main, ConvLayer)
+            or not isinstance(block.shortcut, ChannelDuplicatingPixelUnshuffleUpSampleLayer)):
+        raise ValueError('Expected the native DC-AE convolution plus fixed duplication input shortcut')
+    old = block.main.conv
+    if (old.in_channels != 32 or old.kernel_size != (3, 3) or old.stride != (1, 1)
+            or old.padding != (1, 1) or old.groups != 1 or block.shortcut.factor != 1
+            or type(in_channels) is not int or in_channels <= 32):
+        raise ValueError('Expected a 32-channel DC-AE input and a wider transformer feature input')
+    decoder.project_in = build_decoder_project_in_block(in_channels, old.out_channels, shortcut=None).to(
+        device=old.weight.device, dtype=old.weight.dtype)
+    decoder.cfg.latent_channels = in_channels
+    decoder.cfg.in_shortcut = None
+    logger.info('DC-AE full-width input: %s→%s 3x3; fixed duplication shortcut removed',
+                in_channels, old.out_channels)
+    return decoder.project_in
+
+
+class FullWidthDCAEDecoder(nn.Module):
+    """Original shared scalar decoder taking DiT features, not scaled VAE latents."""
+    def __init__(self, decoder, in_channels, logger):
+        super().__init__()
+        self.decoder = decoder.float().requires_grad_(True)
+        adapt_ppp_decoder_input(self.decoder, in_channels, logger)
+        self.in_channels = in_channels
+        self.output_scale = 1
+
+    @property
+    def parameter_count(self):
+        return sum(p.numel() for p in self.parameters())
+
+    def forward(self, features):
+        if features.ndim != 4 or features.shape[1] != self.in_channels:
+            raise ValueError('Full-width DC-AE requires (3B, feature_channels, H, W)')
+        # Transformer features have no VAE latent scaling to invert.
+        if features.device.type != 'meta' and torch.is_autocast_enabled(features.device.type):
+            features = features.to(torch.get_autocast_dtype(features.device.type))
+        return self.decoder(features)
+
+
 class FrozenConditionEncoder(nn.Module):
     def __init__(self, encoder: nn.Module, scaling_factor: float):
         super().__init__()

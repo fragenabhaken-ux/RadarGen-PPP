@@ -1,0 +1,180 @@
+{
+  "training_run": 2684032,
+  "title": "# DiT four-node run 2684032: all-checkpoint SS50 comparison",
+  "baseline_description": "Previous-training baseline: initial DiT run `2658827`, final step 18,730. Only run 2684032 is swept; failed runs 2744861/2744862 are excluded.",
+  "selection_metric": "distance_attr_f1",
+  "single_table": true,
+  "entries": [
+    {
+      "label": "DiT initial final (2658827)",
+      "kind": "baseline",
+      "epoch": 17,
+      "step": 18730,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2658827_PPP_train_dit_joint_dino_512_constant_1e5/checkpoints/epoch_17_step_18730.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2680507_PPP_validation_ss50_2658827",
+      "reused": true
+    },
+    {
+      "label": "DiT four-node step 1000",
+      "kind": "finetuned",
+      "epoch": 3,
+      "step": 1000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_3_step_1000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_001000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 2000",
+      "kind": "finetuned",
+      "epoch": 7,
+      "step": 2000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_7_step_2000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_002000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 3000",
+      "kind": "finetuned",
+      "epoch": 10,
+      "step": 3000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_10_step_3000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_003000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 4000",
+      "kind": "finetuned",
+      "epoch": 14,
+      "step": 4000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_14_step_4000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_004000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 5000",
+      "kind": "finetuned",
+      "epoch": 18,
+      "step": 5000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_18_step_5000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_005000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 6000",
+      "kind": "finetuned",
+      "epoch": 21,
+      "step": 6000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_21_step_6000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_006000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 7000",
+      "kind": "finetuned",
+      "epoch": 25,
+      "step": 7000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_25_step_7000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_007000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 8000",
+      "kind": "finetuned",
+      "epoch": 29,
+      "step": 8000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_29_step_8000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_008000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 9000",
+      "kind": "finetuned",
+      "epoch": 32,
+      "step": 9000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_32_step_9000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_009000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 10000",
+      "kind": "finetuned",
+      "epoch": 36,
+      "step": 10000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_36_step_10000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_010000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 11000",
+      "kind": "finetuned",
+      "epoch": 39,
+      "step": 11000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_39_step_11000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_011000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 12000",
+      "kind": "finetuned",
+      "epoch": 43,
+      "step": 12000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_43_step_12000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_012000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 13000",
+      "kind": "finetuned",
+      "epoch": 47,
+      "step": 13000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_47_step_13000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_013000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 14000",
+      "kind": "finetuned",
+      "epoch": 50,
+      "step": 14000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_50_step_14000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_014000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 15000",
+      "kind": "finetuned",
+      "epoch": 54,
+      "step": 15000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_54_step_15000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_015000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 16000",
+      "kind": "finetuned",
+      "epoch": 58,
+      "step": 16000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_58_step_16000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_016000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 17000",
+      "kind": "finetuned",
+      "epoch": 61,
+      "step": 17000,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_61_step_17000.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_dit_2684032_checkpoint_sweep/step_017000",
+      "reused": false
+    },
+    {
+      "label": "DiT four-node step 17822",
+      "kind": "finetuned",
+      "epoch": 64,
+      "step": 17822,
+      "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2684032_PPP_continue_dit_2658827_4nodes/checkpoints/epoch_64_step_17822.pth",
+      "results": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2701616_PPP_validation_ss50_2684032",
+      "reused": true
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+scene: 9d1180d52b6a46328063042b8fb325de
+dataset_config: configs/PPP_train_neck.yaml
+output_root: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/scene_comparisons
+seed: 42
+device: cuda
+fps: 10
+models:
+  dit_2849053_step28537:
+    label: DiT DC-AE without bottleneck (28537)
+    validation_config: evaluation/configs/PPP_validation_ss50_2849053_step28537.yaml

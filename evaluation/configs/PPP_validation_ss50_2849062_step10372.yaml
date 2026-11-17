@@ -1,0 +1,14 @@
+# Fixed SS50, final ablation checkpoint; serial entry-node evaluation.
+dataset_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2849062_ablation_dino_neck_compact_train_4nodes/submitted_config.yaml
+model_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2849062_ablation_dino_neck_compact_train_4nodes/submitted_config.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+max_samples: 50
+model: ppp
+reference_validation_records: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2455164_PPP_validation_dinov3_2438929/metrics.jsonl
+checkpoint_path: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2849062_ablation_dino_neck_compact_train_4nodes/checkpoints/epoch_47_step_10372.pth
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_ablation_dino_neck_compact_2849062_step10372
+save_plots: false
+save_predictions: false
+tensorboard: false

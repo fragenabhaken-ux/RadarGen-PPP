@@ -1,0 +1,140 @@
+[
+  {
+    "file": "paper_metric_tables.tex",
+    "rows": [
+      {
+        "name": "RadarGen (released checkpoint)",
+        "parameters": 751.0851,
+        "resolution": 512,
+        "tag": "radargen",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_validation_20261108/radargen/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/2838586_radargen_nameorder_z1_flatup/metrics.json"
+      },
+      {
+        "name": "C3P-dar-SANA (ours)",
+        "parameters": 761.393162,
+        "resolution": 512,
+        "tag": "dit_second",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dit_dcae_no_bottleneck_2867524_step58057/metrics/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/dit_second_2867524/attempt_000/metrics.json"
+      },
+      {
+        "name": "C3P-dar-Dv3 (ours)",
+        "parameters": 239.863331,
+        "resolution": 1024,
+        "tag": "dv3_reference",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_validation_20261108/dino_2773475/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/2838595_dino_2773475_final_z1_flatup/metrics.json"
+      },
+      {
+        "name": "C3P-dar-Dv3 (ours), random init.",
+        "parameters": 239.863331,
+        "resolution": 1024,
+        "tag": "random_second",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dino_random_init_2863217_step29915/metrics/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/random_second_2863217/attempt_000/metrics.json"
+      },
+      {
+        "name": "C3P-dar-Dv3 (ours), compact neck",
+        "parameters": 80.610851,
+        "resolution": 1024,
+        "tag": "compact_second",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dino_neck_compact_2867528_step20595/metrics/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/2895299_dino_compact_2867528_step20595_z1_flatup/metrics.json"
+      },
+      {
+        "name": "C3P-dar-RN50 (ours)",
+        "parameters": 239.031907,
+        "resolution": 1024,
+        "tag": "resnet_second",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/resnet50_backbone_2882612_final/metrics/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/resnet_second_2882612/attempt_000/metrics.json"
+      }
+    ]
+  },
+  {
+    "file": "paper_metric_tables_all_checkpoints.tex",
+    "rows": [
+      {
+        "name": "RadarGen (released checkpoint)",
+        "parameters": 751.0851,
+        "resolution": 512,
+        "tag": "radargen",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_validation_20261108/radargen/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/2838586_radargen_nameorder_z1_flatup/metrics.json"
+      },
+      {
+        "name": "C3P-dar-SANA (ours), 12h",
+        "parameters": 761.393162,
+        "resolution": 512,
+        "tag": "dit_first",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dit_dcae_no_bottleneck_2849053_step28537/metrics/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/dit_first_2849053/attempt_000/metrics.json"
+      },
+      {
+        "name": "C3P-dar-SANA (ours), 24h",
+        "parameters": 761.393162,
+        "resolution": 512,
+        "tag": "dit_second",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dit_dcae_no_bottleneck_2867524_step58057/metrics/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/dit_second_2867524/attempt_000/metrics.json"
+      },
+      {
+        "name": "C3P-dar-Dv3 (ours)",
+        "parameters": 239.863331,
+        "resolution": 1024,
+        "tag": "dv3_reference",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_validation_20261108/dino_2773475/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/2838595_dino_2773475_final_z1_flatup/metrics.json"
+      },
+      {
+        "name": "C3P-dar-Dv3 (ours), random init., 12h",
+        "parameters": 239.863331,
+        "resolution": 1024,
+        "tag": "random_first",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dino_random_init_2847666_step15000/metrics/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/random_first_2847666/attempt_000/metrics.json"
+      },
+      {
+        "name": "C3P-dar-Dv3 (ours), random init., 24h",
+        "parameters": 239.863331,
+        "resolution": 1024,
+        "tag": "random_second",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dino_random_init_2863217_step29915/metrics/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/random_second_2863217/attempt_000/metrics.json"
+      },
+      {
+        "name": "C3P-dar-Dv3 (ours), compact neck, 12h",
+        "parameters": 80.610851,
+        "resolution": 1024,
+        "tag": "compact_first",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dino_neck_compact_2849062_step10372/metrics/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/compact_first_2849062/attempt_000/metrics.json"
+      },
+      {
+        "name": "C3P-dar-Dv3 (ours), compact neck, 24h",
+        "parameters": 80.610851,
+        "resolution": 1024,
+        "tag": "compact_second",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dino_neck_compact_2867528_step20595/metrics/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/2895299_dino_compact_2867528_step20595_z1_flatup/metrics.json"
+      },
+      {
+        "name": "C3P-dar-RN50 (ours), 12h",
+        "parameters": 239.031907,
+        "resolution": 1024,
+        "tag": "resnet_first",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/resnet50_backbone_2856174_step12575/metrics/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/resnet_first_2856174/attempt_000/metrics.json"
+      },
+      {
+        "name": "C3P-dar-RN50 (ours), 24h",
+        "parameters": 239.031907,
+        "resolution": 1024,
+        "tag": "resnet_second",
+        "source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/resnet50_backbone_2882612_final/metrics/summary.json",
+        "detector_source": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/resnet_second_2882612/attempt_000/metrics.json"
+      }
+    ]
+  }
+]

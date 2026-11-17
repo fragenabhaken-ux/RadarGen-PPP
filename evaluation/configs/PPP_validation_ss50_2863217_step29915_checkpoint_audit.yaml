@@ -1,0 +1,14 @@
+# Fixed SS50, final random-init DINO checkpoint; entry-node evaluation.
+dataset_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2863217_ablation_dino_random_init_resume_4nodes/submitted_config.yaml
+model_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2863217_ablation_dino_random_init_resume_4nodes/submitted_config.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+max_samples: 50
+model: ppp
+reference_validation_records: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/2455164_PPP_validation_dinov3_2438929/metrics.jsonl
+checkpoint_path: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2863217_ablation_dino_random_init_resume_4nodes/checkpoints/epoch_91_step_29915.pth
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_ablation_dino_random_init_2863217_step29915_checkpoint_audit
+save_plots: false
+save_predictions: false
+tensorboard: false

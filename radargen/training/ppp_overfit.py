@@ -130,7 +130,7 @@ def diagnose_overfit(model, encoder, dataset, text_provider, ppp_loss, config, a
                             ('camera_images', 'camera_intrinsics', 'reference_to_camera')))
                     else:
                         conditions = [batch[k] for k in ('bev_color_map','bev_seg_map','bev_velocity_map')]
-                        if config.model.model in ('DinoPPP', 'DiTV2', 'NeckPPP'):
+                        if config.model.model in ('DinoPPP', 'ResNetPPP', 'DiTV2', 'NeckPPP'):
                             decoded = model(*conditions)
                         else:
                             conditions = encoder(conditions)

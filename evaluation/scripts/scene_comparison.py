@@ -17,9 +17,11 @@ def main():
     render = commands.add_parser('render', help='Render saved exports without inference')
     render.add_argument('--scene-dir', required=True)
     render.add_argument('--models', nargs='+', required=True, help='Saved model IDs, in column order after GT')
+    render.add_argument('--model-labels', nargs='+', help='Display labels in the same order as --models')
     render.add_argument('--output-dir', required=True)
     render.add_argument('--marks', nargs='+', choices=['doppler', 'rcs', 'heatmap'], default=['doppler'])
     render.add_argument('--formats', nargs='+', choices=['tar', 'png', 'mp4'], default=['tar'])
+    render.add_argument('--skip-overlays', action='store_true', help='Render comparison only; reuse existing overlays')
     render.add_argument('--fps', type=float)
     render.add_argument('--dpi', type=int, default=110)
     render.add_argument('--gamma', type=float, default=.2, help='Heatmap display exponent only')
@@ -35,7 +37,8 @@ def main():
             parser.error('--rcs-limits must be increasing')
         render_scene(args.scene_dir, args.models, args.output_dir, marks=args.marks,
                      formats=args.formats, fps=args.fps, dpi=args.dpi, gamma=args.gamma,
-                     doppler_limit=args.doppler_limit, rcs_limits=args.rcs_limits)
+                     doppler_limit=args.doppler_limit, rcs_limits=args.rcs_limits,
+                     skip_overlays=args.skip_overlays, model_labels=args.model_labels)
 
 
 if __name__ == '__main__':

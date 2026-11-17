@@ -44,12 +44,12 @@ class RadarGenPPPPipeline:
         fresh.model.resume_from = None
         fresh.load_from = None
         fresh.train.grad_checkpointing = False
-        if config.model.model in ('DinoPPP', 'Camera2Radar', 'Image2RadarV2', 'DiTV2', 'NeckPPP'):
+        if config.model.model in ('DinoPPP', 'ResNetPPP', 'Camera2Radar', 'Image2RadarV2', 'DiTV2', 'NeckPPP'):
             from radargen.training.ppp_initialization import initialize_dino_ppp_model
 
             fresh.model.load_from = None
             # The trained PPP checkpoint contains the complete backbone. Loading
-            # its original DINO checkpoint again would add an unnecessary asset.
+            # its original RGB pretrained checkpoint again would add an unnecessary asset.
             components = initialize_dino_ppp_model(fresh, device=device, load_pretrained=False)
             text = None
         else:

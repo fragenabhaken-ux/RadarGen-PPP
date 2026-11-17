@@ -44,7 +44,7 @@ def validate_ppp_config(config: SanaConfig) -> None:
         bounds = [data.get(f"{prefix}_{suffix}") for suffix in ("min", "max")]
         require(all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in bounds), f"{prefix} bounds must be finite numbers")
         require(bounds[0] < bounds[1], f"{prefix}_min must be less than {prefix}_max")
-    direct = config.model.model in ("DinoPPP", "Camera2Radar", "Image2RadarV2", "DiTV2", "NeckPPP")
+    direct = config.model.model in ("DinoPPP", "ResNetPPP", "Camera2Radar", "Image2RadarV2", "DiTV2", "NeckPPP")
     require(direct or config.model.model == "RadarGenPPP_600M_P1_D28", "Unknown PPP model")
     require(config.data.image_size == config.model.image_size == 512, "PPP data/model image_size must be 512")
     model = config.model.extra
@@ -58,16 +58,45 @@ def validate_ppp_config(config: SanaConfig) -> None:
         require(config.train.extra.get("conditioning_dropout") == 0, "DiTV2 disables condition dropout")
     elif config.model.model == "NeckPPP":
         require(not config.train.extra.get("freeze_decoder", False), "NeckPPP trains its spatial prediction head")
+    elif config.model.model == "ResNetPPP":
+        require(model.get("model_name") == "resnet50", "ResNetPPP requires standard ResNet-50")
+        require(bool(model.get("checkpoint_path")), "ResNetPPP requires local ImageNet weights")
+        require(model.get("frozen_base") is False, "ResNetPPP backbone must be fully trainable")
+        require(model.get("embed_dim") == 3*model.get("projection_channels", 384),
+                "ResNetPPP neck width must match three projected modality widths")
+        require(model.get("decoder") == "attention", "ResNetPPP retains the standard attention head")
+        require(not config.train.extra.get("freeze_decoder", False), "ResNetPPP head must train")
     elif direct:
-        require(bool(model.get("checkpoint_path")), "model.extra.checkpoint_path must name the local DINOv3 weights")
+        initialization = model.get("backbone_initialization", "pretrained")
+        require(initialization in ("pretrained", "random"), "Unknown backbone_initialization")
+        if initialization == "random":
+            require(config.model.model == "DinoPPP", "Random initialization currently requires DinoPPP")
+            require(not model.get("checkpoint_path") and not model.get("pretrained", False),
+                    "Random DINO initialization cannot specify pretrained weights")
+            require(model.get("frozen_base") is False, "Random DINO backbone must be trainable")
+        else:
+            require(bool(model.get("checkpoint_path")), "model.extra.checkpoint_path must name the local DINOv3 weights")
         require(not config.train.extra.get("freeze_decoder", False), "DinoPPP trains its spatial prediction head")
+        if config.model.model == "DinoPPP":
+            heads = model.get("neck_heads", 6)
+            width = model.get("embed_dim", 384)
+            require(type(heads) is int and heads > 0, "neck_heads must be a positive integer")
+            head_dim = model.get("neck_head_dim")
+            if head_dim is None:
+                require(width % heads == 0, "Legacy neck width must divide across heads")
+                head_dim = width // heads
+            require(type(head_dim) is int and head_dim > 0 and head_dim % 4 == 0,
+                    "neck_head_dim must be positive and divisible by four")
+            mlp_hidden = model.get("neck_mlp_hidden_dim")
+            require(mlp_hidden is None or (type(mlp_hidden) is int and mlp_hidden > 0),
+                    "neck_mlp_hidden_dim must be a positive integer")
     else:
         require(model.get("num_maps") == model.get("num_conditions") == 3, "PPP requires three modalities and three conditions")
         require(model.get("fixed_timestep") == 0.0, "model.extra.fixed_timestep must be 0.0")
         require(config.vae.vae_type == "dc-ae" and config.vae.weight_dtype == "float32", "PPP requires dc-ae with float32 weights")
         require(config.vae.vae_latent_dim == config.vae.vae_downsample_rate == 32, "PPP requires 32 latent channels and downsample rate 32")
         require(bool(config.vae.vae_pretrained), "vae.vae_pretrained is required")
-        require(model.get('decoder_type', 'dc_ae') in ('dc_ae', 'wide', 'wide_nearest_efficientvit', 'wide_pixelshuffle', 'wide_joint_dino_attention'), 'Unknown decoder_type')
+        require(model.get('decoder_type', 'dc_ae') in ('dc_ae', 'dc_ae_no_bottleneck', 'wide', 'wide_nearest_efficientvit', 'wide_pixelshuffle', 'wide_joint_dino_attention'), 'Unknown decoder_type')
         output_scale = model.get('output_scale', 1)
         require(type(output_scale) is int and output_scale in (1, 2), 'output_scale must be 1 or 2')
         require(output_scale == 1 or model.get('decoder_type') == 'wide_joint_dino_attention',
@@ -161,7 +190,7 @@ def training_microbatch(model, condition_encoder, batch, text_provider, ppp_loss
     """
     import random
     with accelerator.autocast():
-        direct = config.model.model in ('DinoPPP', 'Camera2Radar', 'Image2RadarV2', 'DiTV2', 'NeckPPP')
+        direct = config.model.model in ('DinoPPP', 'ResNetPPP', 'Camera2Radar', 'Image2RadarV2', 'DiTV2', 'NeckPPP')
         if config.model.model in ('Camera2Radar', 'Image2RadarV2'):
             decoded = model(*(batch[k] for k in
                 ('camera_images', 'camera_intrinsics', 'reference_to_camera')))
@@ -241,7 +270,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     from radargen.training.ppp_checkpoint import (save_ppp_checkpoint, load_ppp_checkpoint,
                                                 capture_rng_state, restore_rng_state)
     config = copy.deepcopy(config)
-    direct = config.model.model in ('DinoPPP', 'Camera2Radar', 'Image2RadarV2', 'DiTV2', 'NeckPPP')
+    direct = config.model.model in ('DinoPPP', 'ResNetPPP', 'Camera2Radar', 'Image2RadarV2', 'DiTV2', 'NeckPPP')
     if config.train.auto_lr and config.train.auto_lr.get('rule') == 'none':
         config.train.auto_lr = {}
     sweep = config.train.extra.get('lr_range_test', False)
@@ -276,7 +305,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     if sweep and not direct:
         if accelerator.num_processes != 4 or config.train.gradient_accumulation_steps != 1:
             raise ValueError('Latent LR range run requires four processes and accumulation 1')
-        if (config.model.extra.get('decoder_type') != 'wide_joint_dino_attention'
+        if (config.model.extra.get('decoder_type') not in ('wide_joint_dino_attention', 'dc_ae_no_bottleneck')
                 and config.train.train_batch_size != 5):
             raise ValueError('Legacy latent LR range run requires batch size 5 per GPU')
     if components is None and accelerator.device.type != 'cuda':
@@ -297,6 +326,8 @@ def _run_training(config, options, *, components, dataset, text_provider, output
     init_from = getattr(options, 'init_from', None)
     init_dino = getattr(options, 'init_dino_from', None)
     init_backbone = getattr(options, 'init_backbone_from', None)
+    if config.model.extra.get('backbone_initialization') == 'random' and (init_from or init_dino or init_backbone):
+        raise ValueError('Random-initialization ablation cannot transfer PPP weights; exact resume remains allowed')
     if sum(bool(value) for value in (init_from, init_backbone, init_dino, resume)) > 1:
         raise ValueError('--init-from, --init-backbone-from, --init-dino-from and resume are mutually exclusive')
     if resume == 'latest':
@@ -397,7 +428,7 @@ def _run_training(config, options, *, components, dataset, text_provider, output
                                       config.train.gradient_accumulation_steps,
                                       config.train.optimizer, **config.train.auto_lr)
     if direct:
-        # Standard PyTorch optimizer over only the stem, LoRA and prediction path.
+        # Standard PyTorch optimizer over all trainable direct-model parameters.
         optimizer_kwargs = copy.deepcopy(config.train.optimizer)
         optimizer_class = getattr(torch.optim, optimizer_kwargs.pop('type'))
         optimizer = optimizer_class((p for p in model.parameters() if p.requires_grad), **optimizer_kwargs)

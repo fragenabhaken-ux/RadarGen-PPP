@@ -66,6 +66,52 @@ class ToyPredictor:
 
 
 class ValidationChecks(unittest.TestCase):
+    def test_explicit_sample_name_order(self):
+        from evaluation.validation import order_validation_indices
+        records=[(Path(n), dict(sample_token=n), 0, 0) for n in ['c','a','b']]
+        self.assertEqual(order_validation_indices(records,[0,1,2],'sample_name'),[1,2,0])
+        self.assertEqual(order_validation_indices(records,[0,1,2]),[0,1,2])
+        with self.assertRaises(ValueError):
+            order_validation_indices(records,[0,0],'sample_name')
+
+    def test_continuous_radargen_rng_is_not_reseeded(self):
+        from evaluation.validation import RadarGenPredictor
+        predictor=RadarGenPredictor.__new__(RadarGenPredictor)
+        predictor.seed=42
+        predictor.rng_mode='continuous'
+        predictor.generator=torch.Generator().manual_seed(42)
+        reference=torch.Generator().manual_seed(42)
+        for index in range(3):
+            predictor.seed_sample(index)
+            self.assertTrue(torch.equal(torch.rand(4,generator=predictor.generator),
+                                        torch.rand(4,generator=reference)))
+
+    def test_warmup_preserves_explicit_generator_stream(self):
+        class StreamPredictor(ToyPredictor):
+            def __init__(self):
+                super().__init__('radargen')
+                self.generator=torch.Generator().manual_seed(42)
+                self.draws=[]
+            def seed_sample(self,index):
+                pass
+            def predict(self,sample,conditions):
+                self.draws.append(torch.rand(4,generator=self.generator))
+                return super().predict(sample,conditions)
+        with TemporaryDirectory() as directory:
+            dataset=ToyDataset(directory)
+            output=Path(directory)/'results';output.mkdir()
+            predictor=StreamPredictor()
+            config=dict(model='radargen',seed=42,checkpoint_path='toy',save_plots=False)
+            with patch('radargen.training.radargen_ppp_dataset.validate_ppp_metadata'):
+                evaluate_samples(dataset,predictor,config,torch.device('cpu'),output,
+                                 dict(config,sample_count=2,selected_indices=[0,1]))
+            reference=torch.Generator().manual_seed(42)
+            first=torch.rand(4,generator=reference)
+            second=torch.rand(4,generator=reference)
+            self.assertTrue(torch.equal(predictor.draws[0],first))
+            self.assertTrue(torch.equal(predictor.draws[1],first))
+            self.assertTrue(torch.equal(predictor.draws[2],second))
+
     def test_scene_selection_is_reproducible_and_order_independent(self):
         inventory = [(Path(f'{scene}_{frame}.h5'),
                       dict(scene_token=f'scene_{scene}', frame_index=frame), 0, 0)

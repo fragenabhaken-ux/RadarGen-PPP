@@ -1,0 +1,172 @@
+\section{Radar Generation as a Conditional Point Process}
+\label{sec:method}
+
+A radar scan contains a variable number of spatial detections, each associated with radar cross section (RCS) and Doppler velocity.
+We model this structure directly: a conditional point process describes where returns occur and how many are observed, while spatial mark fields predict their attributes.
+Following the point-process perspective of Riedlinger et al.~\cite{riedlinger2026emptyspace}, we derive the learning objective from the observation model.
+Our task differs from object detection: we sample radar configurations rather than extract object centers, and use deterministic predictions for the radar marks.
+
+\subsection{Radar Scans as Marked Point Configurations}
+
+Let $C$ denote the camera-derived conditioning representation.
+Following RadarGen~\cite{borreda2026radargen}, it comprises aligned BEV appearance, semantic, and radial-velocity maps constructed using estimated depth, semantic segmentation, and optical flow.
+The target scan is a finite collection
+\begin{equation}
+Y=\{(\mathbf{x}_i,\mathbf{m}_i)\}_{i=1}^{N},
+\qquad \mathbf{m}_i=(r_i,v_i),
+\end{equation}
+where $\mathbf{x}_i\in\Omega\subset\mathbb{R}^2$ is a Cartesian BEV position, $r_i$ is RCS in dBsm, and $v_i$ is signed radial velocity in $\mathrm{m}\,\mathrm{s}^{-1}$.
+The number of returns $N$ varies between scans and may be zero.
+We omit elevation and regard RCS and velocity as marks attached to spatial events.
+
+A neural network maps $C$ to three fields: a log-intensity field and two mark fields.
+The intensity defines a distribution over point configurations; the mark fields attach attributes to sampled locations.
+Thus, one field prediction supports repeated sampling of distinct radar scans.
+
+\subsection{Conditional Intensity: Count and Location}
+
+We model return locations by an inhomogeneous Poisson point process (PPP) conditioned on $C$.
+Its intensity $\lambda_\theta(\mathbf{x}\mid C)$ is nonnegative and measured in expected returns per unit physical area.
+For any region $A\subseteq\Omega$,
+\begin{equation}
+\begin{aligned}
+N(A)\mid C &\sim \operatorname{Poisson}(\Lambda_\theta(A\mid C)),\\
+\Lambda_\theta(A\mid C)&=\int_A\lambda_\theta(\mathbf{x}\mid C)\,\mathrm{d}\mathbf{x}.
+\end{aligned}
+\label{eq:regional_count}
+\end{equation}
+In particular, $\Lambda_\theta=\Lambda_\theta(\Omega\mid C)$ is the expected total number of returns.
+Conditional on $N$, locations are independent draws from
+\begin{equation}
+p_\theta(\mathbf{x}\mid C)
+=\frac{\lambda_\theta(\mathbf{x}\mid C)}{\Lambda_\theta}.
+\label{eq:normalized_location}
+\end{equation}
+The intensity therefore encodes two quantities: its integral controls cardinality, while its normalized shape controls the spatial distribution.
+A unit-normalized spatial map describes only the latter.
+
+\paragraph{Grid representation.}
+We partition $\Omega$ into $K=HW$ equal-area cells.
+For each cell $c$, the network predicts $s_c$, with
+\begin{equation}
+\lambda_{\theta,c}=\frac{\exp(s_c)}{|\Omega|},
+\qquad
+\mu_c=\lambda_{\theta,c}\frac{|\Omega|}{K}
+=\frac{\exp(s_c)}{K}.
+\label{eq:cell_mass}
+\end{equation}
+Here $\mu_c$ is the expected count in the cell and $\Lambda_\theta=\sum_c\mu_c$ for the piecewise-constant intensity.
+Equivalently, $s_c$ is a log intensity with respect to spatial measure normalized to unit area.
+The factor $1/K$ accounts for cell area; it does not constrain the total predicted count to one.
+
+\subsection{Learning from Observed Returns}
+
+For observed locations $X=\{\mathbf{x}_i\}_{i=1}^N$, the spatial PPP negative log-likelihood, up to terms independent of $\theta$, is
+\begin{equation}
+\ell_{\mathrm{PPP}}(X,C)
+=\Lambda_\theta-\sum_{i=1}^{N}\log\lambda_\theta(\mathbf{x}_i\mid C).
+\label{eq:continuous_ppp_nll}
+\end{equation}
+The integral term penalizes predicted returns throughout the domain, including regions without measurements.
+The observation term rewards intensity at measured locations.
+For an empty scan, only the integral remains, encouraging low predicted count.
+
+The roles of count and localization become explicit by substituting Eq.~\eqref{eq:normalized_location}:
+\begin{equation}
+\ell_{\mathrm{PPP}}
+=\underbrace{\Lambda_\theta-N\log\Lambda_\theta}_{\text{count}}
+-\underbrace{\sum_{i=1}^{N}\log p_\theta(\mathbf{x}_i\mid C)}_{\text{spatial distribution}}.
+\label{eq:count_spatial_decomposition}
+\end{equation}
+The first term is a Poisson count loss up to the constant $\log N!$; the second evaluates the conditional locations.
+Both are learned through the same intensity field, without a separate count head.
+
+In the grid implementation, let $c(i)$ be the cell containing return $i$.
+We evaluate the equivalent count likelihood
+\begin{equation}
+\ell_{\mathrm{grid}}
+=\sum_c\mu_c-\sum_{i=1}^{N}\log\mu_{c(i)}.
+\label{eq:ppp_nll}
+\end{equation}
+This differs from Eq.~\eqref{eq:continuous_ppp_nll} only by a parameter-independent cell-area term.
+Every measured return contributes separately, including returns assigned to the same cell.
+We neither binarize cell counts nor interpolate between cells when evaluating the fields.
+
+\paragraph{Mark supervision.}
+The network also predicts raw fields $a_c$ and $b_c$.
+In the cubic-link configurations considered here, their physical predictions are $\widehat r_c=a_c^3$ and $\widehat v_c=b_c^3$.
+These links permit signed, unbounded outputs.
+We supervise the predictions directly at measured return locations:
+\begin{equation}
+\begin{aligned}
+\ell_r&=\sum_{i=1}^{N}|\widehat r_{c(i)}-r_i|,\\
+\ell_v&=\sum_{i=1}^{N}|\widehat v_{c(i)}-v_i|.
+\end{aligned}
+\label{eq:mark_losses}
+\end{equation}
+Errors are computed in physical units, with an ordinary absolute difference for signed velocity.
+Multiple returns in one cell retain their individual targets.
+Unlike RadarGen's interpolated attribute maps, these losses require no dense mark targets.
+
+L1 supervision admits an interpretation as a fixed-scale Laplace observation model for each mark.
+However, our implementation predicts only mark locations: it neither estimates mark scales nor samples residual mark noise.
+We therefore use the PPP to model spatial randomness and attach deterministic marks during generation, rather than claim a learned joint density over positions and marks.
+
+\paragraph{Training objective.}
+For a single frame, the implemented objective is
+\begin{equation}
+\mathcal{L}
+=\frac{\alpha\ell_{\mathrm{grid}}+\beta\ell_r+\gamma\ell_v}
+{\max(N,1)},
+\label{eq:full_objective}
+\end{equation}
+averaged over frames in a minibatch.
+We use $\alpha=\beta=\gamma=1$ in the main configuration.
+Normalization reduces the contribution of high-count frames relative to unweighted likelihood training.
+It yields a count-normalized, likelihood-based objective; it is not the unweighted dataset negative log-likelihood.
+For $N=0$, both mark sums vanish and the loss reduces to $\alpha\Lambda_\theta$.
+
+\subsection{Sampling Radar Scans}
+
+A single network forward pass produces all three fields.
+We then draw independent cell counts
+\begin{equation}
+\widetilde n_c\sim\operatorname{Poisson}(\mu_c),
+\qquad
+\widetilde N=\sum_c\widetilde n_c
+\sim\operatorname{Poisson}(\Lambda_\theta).
+\end{equation}
+For each sampled event in cell $c$, we emit a return at the cell center with marks $(\widehat r_c,\widehat v_c)$.
+This is equivalent to sampling the total count first and allocating events to cells with probabilities $\mu_c/\Lambda_\theta$.
+Neither an occupancy threshold nor an iterative point-recovery procedure is needed.
+
+Multiple events in a cell are retained and have identical coordinates and marks.
+The implemented output is therefore a counting measure that permits repeated returns.
+Sampling introduces no subcell jitter or additional mark noise.
+
+\subsection{Field-Prediction Architectures}
+
+The observation model requires three dense output fields and is independent of the network used to predict them.
+We investigate two implementations with the same conditioning representation, loss, and sampling procedure.
+
+\paragraph{DiT-based predictor.}
+We adapt RadarGen's transformer for direct field prediction.
+It processes encoded BEV conditioning at a fixed timestep and uses a trainable decoder to produce the three fields.
+The model retains the conditioning autoencoder and a fixed empty-prompt embedding, but replaces iterative denoising with one transformer evaluation followed by PPP sampling.
+
+\paragraph{DINOv3-based predictor.}
+A shared pretrained vision transformer processes the three conditioning maps using modality-specific low-rank adapters.
+Final-block features are concatenated across modalities and passed to a transformer neck and an attention-based upsampling decoder.
+In the main configuration, the backbone, adapters, neck, and decoder are trained jointly.
+This implementation requires neither a latent autoencoder nor text or timestep conditioning.
+
+Both receive $512\times512$ conditioning maps.
+The DiT model predicts $512\times512$ fields, while the high-resolution DINOv3 model predicts $1024\times1024$ fields over the same physical domain.
+Eq.~\eqref{eq:cell_mass} applies at either resolution.
+
+\paragraph{Scope of the observation model.}
+The PPP assumes independent counts in disjoint regions conditional on $C$, and its conditional count variance equals its mean.
+The network can predict a spatially structured intensity using global scene context, but sampling adds no interactions between returns.
+Dependencies caused by shared scatterers, multipath, occlusion, or sensor processing may therefore remain unmodeled.
+Grid sampling additionally quantizes locations and assigns the same marks to returns in a cell.
+These assumptions provide a tractable statistical model of radar observations rather than a physical model of radar propagation.

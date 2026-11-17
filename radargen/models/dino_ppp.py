@@ -85,29 +85,42 @@ class ParallelTransformerBlock(nn.Module):
     Q/K/V and the MLP features; their outputs are joined before the residual.
     """
 
-    def __init__(self, dim: int, num_heads: int, mlp_ratio: float, attn_dropout: float):
+    def __init__(self, dim: int, num_heads: int, mlp_ratio: float, attn_dropout: float,
+                 *, head_dim: int | None = None, mlp_hidden_dim: int | None = None):
         super().__init__()
+        if type(num_heads) is not int or num_heads <= 0:
+            raise ValueError("Neck head count must be a positive integer")
+        if head_dim is None:
+            if dim % num_heads:
+                raise ValueError("Legacy attention width must divide across neck heads")
+            head_dim = dim // num_heads
+        if type(head_dim) is not int or head_dim <= 0 or head_dim % 4:
+            raise ValueError("Neck head dimension must be positive and divisible by four for 2D RoPE")
+        hidden = int(dim * mlp_ratio) if mlp_hidden_dim is None else mlp_hidden_dim
+        if type(hidden) is not int or hidden <= 0:
+            raise ValueError("Neck MLP hidden dimension must be a positive integer")
         self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.mlp_hidden = int(dim * mlp_ratio)
+        self.head_dim = head_dim
+        self.attention_dim = num_heads * head_dim
+        self.mlp_hidden = hidden
         self.attn_dropout = attn_dropout
         self.pre_norm = nn.LayerNorm(dim, bias=False)
-        self.linear1 = nn.Linear(dim, 3 * dim + self.mlp_hidden, bias=False)
-        self.linear2 = nn.Linear(dim + self.mlp_hidden, dim, bias=False)
+        self.linear1 = nn.Linear(dim, 3 * self.attention_dim + self.mlp_hidden, bias=False)
+        self.linear2 = nn.Linear(self.attention_dim + self.mlp_hidden, dim, bias=False)
         self.q_scale = nn.Parameter(torch.ones(self.head_dim))
         self.k_scale = nn.Parameter(torch.ones(self.head_dim))
         self.mlp_act = nn.SELU()
 
     def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         batch, length, dim = x.shape
-        qkv, hidden = self.linear1(self.pre_norm(x)).split([3 * dim, self.mlp_hidden], dim=-1)
+        qkv, hidden = self.linear1(self.pre_norm(x)).split([3 * self.attention_dim, self.mlp_hidden], dim=-1)
         q, k, v = qkv.reshape(batch, length, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q = _apply_rope(_rms_norm(q, self.q_scale), cos, sin)
         k = _apply_rope(_rms_norm(k, self.k_scale), cos, sin)
         attended = F.scaled_dot_product_attention(
             q, k, v, dropout_p=self.attn_dropout if self.training else 0.0
         )
-        attended = attended.transpose(1, 2).reshape(batch, length, dim)
+        attended = attended.transpose(1, 2).reshape(batch, length, self.attention_dim)
         return x + self.linear2(torch.cat([attended, self.mlp_act(hidden)], dim=-1))
 
 
@@ -117,14 +130,25 @@ class RoPETransformerNeck(nn.Module):
     def __init__(
         self, dim: int, num_layers: int, num_heads: int, mlp_ratio: float,
         attn_dropout: float, grad_checkpointing: bool,
+        *, head_dim: int | None = None, mlp_hidden_dim: int | None = None,
     ):
         super().__init__()
-        if dim % num_heads or (dim // num_heads) % 4:
-            raise ValueError("Neck dimension must give a head dimension divisible by four for 2D RoPE.")
-        self.head_dim = dim // num_heads
+        if type(num_heads) is not int or num_heads <= 0:
+            raise ValueError("Neck head count must be positive")
+        if head_dim is None:
+            if dim % num_heads:
+                raise ValueError("Legacy neck width must divide across heads")
+            head_dim = dim // num_heads
+        if type(head_dim) is not int or head_dim <= 0 or head_dim % 4:
+            raise ValueError("Neck head dimension must be positive and divisible by four for 2D RoPE")
+        if mlp_hidden_dim is not None and (type(mlp_hidden_dim) is not int or mlp_hidden_dim <= 0):
+            raise ValueError("Neck MLP hidden dimension must be a positive integer")
+        self.head_dim = head_dim
         self.grad_checkpointing = grad_checkpointing
         self.layers = nn.ModuleList(
-            ParallelTransformerBlock(dim, num_heads, mlp_ratio, attn_dropout) for _ in range(num_layers)
+            ParallelTransformerBlock(dim, num_heads, mlp_ratio, attn_dropout,
+                                     head_dim=head_dim, mlp_hidden_dim=mlp_hidden_dim)
+            for _ in range(num_layers)
         )
         self.out_norm = nn.LayerNorm(dim)
 
@@ -394,6 +418,8 @@ class DinoPPP(nn.Module):
         num_refine_convs: int = 5,
         local_refine_blocks: int = 2,
         grad_checkpointing: bool = False,
+        neck_head_dim: int | None = None,
+        neck_mlp_hidden_dim: int | None = None,
     ):
         super().__init__()
         import timm
@@ -463,7 +489,8 @@ class DinoPPP(nn.Module):
         else:
             raise ValueError(f"Unsupported feature fusion: {feature_fusion}")
         self.neck = RoPETransformerNeck(
-            embed_dim, neck_layers, neck_heads, mlp_ratio, attn_dropout, grad_checkpointing
+            embed_dim, neck_layers, neck_heads, mlp_ratio, attn_dropout, grad_checkpointing,
+            head_dim=neck_head_dim, mlp_hidden_dim=neck_mlp_hidden_dim,
         )
         if decoder == "attention":
             self.head = AttentionPixelShuffleHead(

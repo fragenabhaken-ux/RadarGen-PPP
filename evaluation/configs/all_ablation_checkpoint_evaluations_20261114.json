@@ -1,0 +1,168 @@
+{
+  "scene_list": "jsc_jupiter/scene_extra10_step15000_tokens.txt",
+  "scene_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/scene_comparisons",
+  "cpu_root": "/e/project1/nxtaim-1/huber7/repos/RadarGen/output/ablations/all_checkpoint_evaluations_20261114/cpu",
+  "models": [
+    {
+      "name": "dit",
+      "label": "DiT without bottleneck",
+      "execution_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/evaluation_programme_20261114/dit",
+      "checkpoints": [
+        {
+          "key": "dit_first",
+          "label": "DiT without bottleneck, first-run final",
+          "phase": "first",
+          "training_job": 2849053,
+          "step": 28537,
+          "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2849053_ablation_dit_dcae_no_bottleneck_train_4nodes/checkpoints/epoch_21_step_28537.pth",
+          "minimum_step": 28537,
+          "train_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2849053_ablation_dit_dcae_no_bottleneck_train_4nodes",
+          "bundle_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dit_dcae_no_bottleneck_2849053_step28537",
+          "ss50_output": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_ablation_dit_dcae_no_bottleneck_2849053_step28537",
+          "template_config": "evaluation/configs/PPP_validation_ss50_2849053_step28537.yaml",
+          "model_id_template": "dit_2849053_step{step}",
+          "count_slug": "dit_no_bottleneck_first",
+          "detector_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/dit_first_2849053"
+        },
+        {
+          "key": "dit_second",
+          "label": "DiT without bottleneck, second-run final",
+          "phase": "second",
+          "training_job": 2867524,
+          "step": 58057,
+          "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2867524_ablation_dit_dcae_no_bottleneck_resume_4nodes/checkpoints/epoch_44_step_58057.pth",
+          "minimum_step": 28537,
+          "train_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2867524_ablation_dit_dcae_no_bottleneck_resume_4nodes",
+          "bundle_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dit_dcae_no_bottleneck_2867524_step58057",
+          "ss50_output": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_ablation_dit_dcae_no_bottleneck_2867524_step58057_checkpoint_audit",
+          "template_config": "evaluation/configs/PPP_validation_ss50_2849053_step28537.yaml",
+          "model_id_template": "dit_2867524_step{step}",
+          "count_slug": "dit_no_bottleneck",
+          "detector_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/dit_second_2867524"
+        }
+      ],
+      "evaluation_job": 2895546
+    },
+    {
+      "name": "compact",
+      "label": "Compact DINO",
+      "execution_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/evaluation_programme_20261114/compact",
+      "checkpoints": [
+        {
+          "key": "compact_first",
+          "label": "Compact DINO, first-run final",
+          "phase": "first",
+          "training_job": 2849062,
+          "step": 10372,
+          "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2849062_ablation_dino_neck_compact_train_4nodes/checkpoints/epoch_47_step_10372.pth",
+          "minimum_step": 10372,
+          "train_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2849062_ablation_dino_neck_compact_train_4nodes",
+          "bundle_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dino_neck_compact_2849062_step10372",
+          "ss50_output": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_ablation_dino_neck_compact_2849062_step10372",
+          "template_config": "evaluation/configs/PPP_validation_ss50_2849062_step10372.yaml",
+          "model_id_template": "dino_compact_2849062_step{step}",
+          "count_slug": "dino_compact_first",
+          "detector_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/compact_first_2849062"
+        },
+        {
+          "key": "compact_second",
+          "label": "Compact DINO, second-run final",
+          "phase": "second",
+          "training_job": 2867528,
+          "step": 20595,
+          "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2867528_ablation_dino_neck_compact_resume_4nodes/checkpoints/epoch_94_step_20595.pth",
+          "minimum_step": 10372,
+          "train_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2867528_ablation_dino_neck_compact_resume_4nodes",
+          "bundle_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dino_neck_compact_2867528_step20595",
+          "ss50_output": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_ablation_dino_neck_compact_2867528_step20595_checkpoint_audit",
+          "template_config": "evaluation/configs/PPP_validation_ss50_2849062_step10372.yaml",
+          "model_id_template": "dino_compact_2867528_step{step}",
+          "count_slug": "dino_compact",
+          "detector_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/compact_second_2867528",
+          "cached_detector_metrics": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/2895299_dino_compact_2867528_step20595_z1_flatup/metrics.json"
+        }
+      ],
+      "evaluation_job": 2895547
+    },
+    {
+      "name": "random",
+      "label": "Random DINO",
+      "execution_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/evaluation_programme_20261114/random",
+      "checkpoints": [
+        {
+          "key": "random_first",
+          "label": "Random DINO, first-run final",
+          "phase": "first",
+          "training_job": 2847666,
+          "step": 15000,
+          "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2847666_ablation_dino_random_init_train_4nodes/checkpoints/epoch_45_step_15000.pth",
+          "minimum_step": 15000,
+          "train_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2847666_ablation_dino_random_init_train_4nodes",
+          "bundle_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dino_random_init_2847666_step15000",
+          "ss50_output": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_ablation_dino_random_init_2847666_step15000",
+          "template_config": "evaluation/configs/PPP_validation_ss50_2847666_step15000.yaml",
+          "model_id_template": "dino_random_2847666_step{step}",
+          "count_slug": "dino_random_first",
+          "detector_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/random_first_2847666"
+        },
+        {
+          "key": "random_second",
+          "label": "Random DINO, second-run final",
+          "phase": "second",
+          "training_job": 2863217,
+          "step": 29915,
+          "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2863217_ablation_dino_random_init_resume_4nodes/checkpoints/epoch_91_step_29915.pth",
+          "minimum_step": 15000,
+          "train_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2863217_ablation_dino_random_init_resume_4nodes",
+          "bundle_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dino_random_init_2863217_step29915",
+          "ss50_output": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_ablation_dino_random_init_2863217_step29915_checkpoint_audit",
+          "template_config": "evaluation/configs/PPP_validation_ss50_2847666_step15000.yaml",
+          "model_id_template": "dino_random_2863217_step{step}",
+          "count_slug": "dino_random",
+          "detector_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/random_second_2863217"
+        }
+      ],
+      "evaluation_job": 2895548
+    },
+    {
+      "name": "resnet",
+      "label": "ResNet-50",
+      "execution_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/evaluation_programme_20261114/resnet",
+      "checkpoints": [
+        {
+          "key": "resnet_first",
+          "label": "ResNet-50, first-run final",
+          "phase": "first",
+          "training_job": 2856174,
+          "step": 12575,
+          "checkpoint": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2856174_ablation_resnet50_backbone_train_4nodes/checkpoints/epoch_47_step_12575.pth",
+          "minimum_step": 12575,
+          "train_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2856174_ablation_resnet50_backbone_train_4nodes",
+          "bundle_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/resnet50_backbone_2856174_step12575",
+          "ss50_output": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_ablation_resnet50_backbone_2856174_step12575",
+          "template_config": "evaluation/configs/PPP_validation_ss50_2856174_step12575.yaml",
+          "model_id_template": "resnet50_2856174_step{step}",
+          "count_slug": "resnet50_first",
+          "detector_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/resnet_first_2856174"
+        },
+        {
+          "key": "resnet_second",
+          "label": "ResNet-50, second-run final",
+          "phase": "second",
+          "training_job": 2882612,
+          "step": null,
+          "checkpoint": null,
+          "minimum_step": 12575,
+          "train_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2882612_ablation_resnet50_backbone_resume_4nodes",
+          "bundle_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/resnet50_backbone_2882612_final",
+          "ss50_output": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/SS50_ablation_resnet50_backbone_2882612_final",
+          "template_config": "evaluation/configs/PPP_validation_ss50_2856174_step12575.yaml",
+          "model_id_template": "resnet50_2882612_step{step}",
+          "count_slug": "resnet50_second",
+          "detector_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/detection/ablation_checkpoint_programme/resnet_second_2882612"
+        }
+      ],
+      "evaluation_job": 2895549
+    }
+  ]
+}

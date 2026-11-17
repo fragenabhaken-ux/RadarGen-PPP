@@ -205,3 +205,8 @@ cython_debug/
 *.err
 *.out
 ppp_startup_*.md
+
+# Independent radar detector repository
+/radar_detection/
+
+/core.jpbl-s02-03.1313952

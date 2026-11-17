@@ -1,0 +1,15 @@
+{
+  "training_job": 2867524,
+  "step": 58057,
+  "model_id": "dit_2867524_step58057",
+  "label": "dit_dcae_no_bottleneck, step 58057",
+  "manifest": "output/ppp_manifests/validation_e459ae84ce6af695a1557ae0cd6f3c6ce5f0a3a0431e76474116a874f5e94fbd.json",
+  "keyframes": 1906,
+  "temporal_frames": 9481,
+  "scenes": 49,
+  "work_dir": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dit_dcae_no_bottleneck_2867524_step58057/execution",
+  "validation_output": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dit_dcae_no_bottleneck_2867524_step58057/metrics",
+  "validation_config": "evaluation/configs/FULL_ablation_2867524_step58057_png.yaml",
+  "dataset_config": "configs/PPP_train_neck.yaml",
+  "scene_output_root": "/e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/scene_comparisons"
+}

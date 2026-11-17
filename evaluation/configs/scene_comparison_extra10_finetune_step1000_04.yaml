@@ -1,0 +1,15 @@
+# All 194 temporal frames; export once, render MP4 only.
+scene: 63fe44fc70824d4499228e8d293d0e91
+dataset_config: configs/PPP_train_neck.yaml
+output_root: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/scene_comparisons
+seed: 42
+device: cuda
+fps: 10
+# Model IDs are also export filenames. Use a new ID when changing a checkpoint.
+models:
+  radargen:
+    label: RadarGen
+    validation_config: evaluation/configs/RadarGen_validation.yaml
+  dino_2744861_step1000:
+    label: DINOv3 finetuning step 1000 (2744861)
+    validation_config: evaluation/configs/FULL_validation_dino_2744861_step1000.yaml

@@ -74,6 +74,19 @@ def select_keyframe_indices(frame_index, count=None, seed=42):
         [frame_index[i] for i in eligible], count, seed)]
 
 
+
+def order_validation_indices(frame_index, indices, order='dataset'):
+    """Order selected identities explicitly; sample_name means annotation sample_token."""
+    if order == 'dataset':
+        return list(indices)
+    if order != 'sample_name':
+        raise ValueError('sample_order must be dataset or sample_name')
+    names = [frame_index[i][1]['sample_token'] for i in indices]
+    if len(set(names)) != len(names):
+        raise ValueError('Duplicate sample names in validation inventory')
+    return sorted(indices, key=lambda i: frame_index[i][1]['sample_token'])
+
+
 def validation_boxes(dataset, expected):
     """Load annotated keyframe boxes in the same flat-up frame as radar XY."""
     if not expected['reference_is_key_frame']:
@@ -212,6 +225,7 @@ class RadarGenPredictor:
         self.pipeline.eval()
         self.transform = get_transform('default_train_from_np', resolution=model_config.data.image_size)
         self.seed = config['seed']
+        self.rng_mode = config.get('radargen_rng_mode', 'per_sample')
         self.generator = torch.Generator(device=device).manual_seed(self.seed)
         self.size = model_config.data.image_size
         self.radius = model_config.data.extra['coordinate_range']
@@ -219,7 +233,8 @@ class RadarGenPredictor:
         self.device = device
 
     def seed_sample(self, index):
-        self.generator.manual_seed(int(np.random.SeedSequence([self.seed, index]).generate_state(1)[0]))
+        if self.rng_mode == 'per_sample':
+            self.generator.manual_seed(int(np.random.SeedSequence([self.seed, index]).generate_state(1)[0]))
 
     def predict(self, sample, conditions):
         from radargen.inference.pcl_recovery import recover_pcl_attributes
@@ -395,7 +410,14 @@ def _evaluate_samples(dataset, predictor, config, device, directory, provenance,
                     with torch.random.fork_rng(devices=cuda_devices):
                         if hasattr(predictor, "seed_sample"):
                             predictor.seed_sample(index)
-                        predictor.predict(sample, conditions)
+                        # fork_rng covers global RNGs, not an explicit torch.Generator.
+                        generator = getattr(predictor, 'generator', None)
+                        generator_state = generator.get_state() if generator is not None else None
+                        try:
+                            predictor.predict(sample, conditions)
+                        finally:
+                            if generator is not None:
+                                generator.set_state(generator_state)
                         if device.type == 'cuda':
                             torch.cuda.synchronize(device)
                     warmed_up = True
@@ -498,6 +520,13 @@ def run_validation(config, output_dir=None, max_samples=None, *, resume=False):
 
     if config['model'] not in ('ppp', 'radargen'):
         raise ValueError('model must be ppp or radargen')
+    rng_mode = config.get('radargen_rng_mode', 'per_sample')
+    if rng_mode not in ('per_sample', 'continuous'):
+        raise ValueError('radargen_rng_mode must be per_sample or continuous')
+    if rng_mode == 'continuous' and config['model'] != 'radargen':
+        raise ValueError('Continuous RNG mode is only supported for RadarGen')
+    if resume and rng_mode == 'continuous':
+        raise ValueError('Continuous RNG validation must start fresh; resume would require saved RNG state')
     checkpoint = Path(config['checkpoint_path']).expanduser().resolve()
     if not checkpoint.is_file():
         raise ValueError(f'Checkpoint unavailable: {checkpoint}; pass --checkpoint with a local trained checkpoint')
@@ -531,6 +560,7 @@ def run_validation(config, output_dir=None, max_samples=None, *, resume=False):
     if limit is not None and (not isinstance(limit, int) or limit <= 0):
         raise ValueError('max_samples must be a positive integer or null')
     selected_indices = select_keyframe_indices(dataset.frame_index, limit, config.get('selection_seed', 42))
+    selected_indices = order_validation_indices(dataset.frame_index, selected_indices, config.get('sample_order', 'dataset'))
     count = len(selected_indices)
     if config.get('reference_validation_records'):
         reference_rows = [json.loads(line) for line in
@@ -564,6 +594,11 @@ def run_validation(config, output_dir=None, max_samples=None, *, resume=False):
             raise ValueError('Resume requires the same checkpoint, config, and immutable sample inventory')
     else:
         record.write_text(json.dumps(provenance, indent=2) + '\n')
+        if config.get('sample_order') == 'sample_name':
+            (directory / 'sample_order.json').write_text(json.dumps([
+                dict(sample_token=dataset.frame_index[i][1]['sample_token'],
+                     source=str(dataset.frame_index[i][0]), dataset_index=i)
+                for i in selected_indices], indent=2) + '\n')
     torch.manual_seed(config['seed'])
     predictor = (PPPPredictor if config['model'] == 'ppp' else RadarGenPredictor)(model_config, config, device)
     return evaluate_samples(dataset, predictor, config, device, directory, provenance, resume=resume)

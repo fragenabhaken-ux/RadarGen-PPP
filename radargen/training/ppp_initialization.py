@@ -25,10 +25,23 @@ class PPPModelComponents:
 def initialize_dino_ppp_model(config, *, device="cpu", load_pretrained=True):
     """Build the direct BEV predictor; a full PPP checkpoint needs no RGB weights.
 
-    The shared RGB DINO processes each BEV condition with its own LoRA before
-    feature fusion and prediction of three raw radar fields. There is no
-    conditioning autoencoder or text encoder.
+    DINO uses modality-specific LoRA; ResNet uses a shared RGB encoder and
+    projection. Both concatenate modality features before neck/head prediction
+    of three raw fields, without a conditioning autoencoder or text encoder.
     """
+    if getattr(config.model, "model", "DinoPPP") == "ResNetPPP":
+        from radargen.models.resnet_ppp import ResNetPPP
+        kwargs = dict(config.model.extra or {})
+        if load_pretrained:
+            checkpoint = kwargs.get("checkpoint_path", "")
+            if not checkpoint or not Path(checkpoint).is_file():
+                raise FileNotFoundError(f"Local ResNet-50 checkpoint unavailable: {checkpoint}")
+        else:
+            # A trained PPP checkpoint restores encoder, projection, neck and head.
+            kwargs["checkpoint_path"] = ""
+        kwargs.setdefault("grad_checkpointing", config.train.grad_checkpointing)
+        return PPPModelComponents(ResNetPPP(**kwargs).to(device), None, (), ())
+
     if getattr(config.model, "model", "DinoPPP") == "NeckPPP":
         from radargen.models.neck_ppp import NeckPPP
         kwargs = dict(config.model.extra or {})
@@ -44,7 +57,17 @@ def initialize_dino_ppp_model(config, *, device="cpu", load_pretrained=True):
     from radargen.models.dino_ppp import DinoPPP
 
     kwargs = dict(config.model.extra or {})
-    if load_pretrained:
+    initialization = kwargs.pop("backbone_initialization", "pretrained")
+    if initialization not in ("pretrained", "random"):
+        raise ValueError("backbone_initialization must be pretrained or random")
+    if initialization == "random":
+        if config.model.model != "DinoPPP":
+            raise ValueError("Random backbone initialization is currently supported only for DinoPPP")
+        if kwargs.get("checkpoint_path") or kwargs.get("pretrained", False):
+            raise ValueError("Random DINO initialization cannot specify pretrained weights")
+        if kwargs.get("frozen_base", True):
+            raise ValueError("Random DINO backbone must be trainable")
+    if load_pretrained and initialization == "pretrained":
         checkpoint = kwargs.get("checkpoint_path", "")
         if not checkpoint or not Path(checkpoint).is_file():
             raise FileNotFoundError(f"Local DINOv3 checkpoint unavailable: {checkpoint}")
@@ -186,6 +209,14 @@ def initialize_ppp_model(config, *, null_embed_path, device="cpu", checkpoint_pa
         dit.return_features = True
         logger.info('PPP decoder %s parameters: %s (DC-AE budget %s)',
                     decoder_type, decoder.parameter_count, budget)
+    elif decoder_type == 'dc_ae_no_bottleneck':
+        from .ppp_decoder import FullWidthDCAEDecoder
+        if dit.patch_size != 1:
+            raise ValueError('Full-width DC-AE requires DiT patch size one')
+        decoder = FullWidthDCAEDecoder(ae.decoder, dit.x_embedder.proj.out_channels, logger)
+        dit.final_layer = torch.nn.Identity()
+        dit.return_features = True
+        logger.info('Full-width DC-AE decoder parameters: %s', decoder.parameter_count)
     elif decoder_type == 'dc_ae':
         decoder = PPPDecoder(ae.decoder, scale)
     else:

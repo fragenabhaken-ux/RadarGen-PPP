@@ -70,6 +70,8 @@ def main():
     parser.add_argument('--output', type=Path, help='Output image path (default: beside input)')
     parser.add_argument('--ylim', type=float, nargs=2, metavar=('MIN', 'MAX'),
                         help='Loss axis limits, e.g. --ylim 10 40')
+    parser.add_argument('--xlim', type=float, nargs=2, metavar=('MIN', 'MAX'),
+                        help='Positive learning-rate axis limits, e.g. --xlim 1e-5 1e-2')
     parser.add_argument('--smoothing-beta', type=float, default=0.995,
                         help='EWMA beta over recorded points, in [0,1); default 0.995')
     args = parser.parse_args()
@@ -78,6 +80,9 @@ def main():
     if args.ylim and (not all(math.isfinite(v) for v in args.ylim)
                       or args.ylim[0] >= args.ylim[1]):
         parser.error('--ylim requires finite MIN < MAX')
+    if args.xlim and (not all(math.isfinite(v) and v > 0 for v in args.xlim)
+                      or args.xlim[0] >= args.xlim[1]):
+        parser.error('--xlim requires positive finite MIN < MAX')
     path = args.log or args.metrics
     try:
         points, skipped = read_points(path, args.metrics is not None)
@@ -99,6 +104,8 @@ def main():
             ax.plot(rates, smooth, label=f'EWMA (smoothing beta={args.smoothing_beta:g})')
         ax.set(xscale='log', xlabel='Recorded optimizer learning rate', ylabel='Total PPP training loss',
                title=f'{path.name}: {len(points)} recorded updates')
+        if args.xlim:
+            ax.set_xlim(*args.xlim)
         if args.ylim:
             ax.set_ylim(*args.ylim)
         ax.grid(True, alpha=0.25)

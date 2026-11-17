@@ -103,3 +103,12 @@ class ContinuousConsumerTests(unittest.TestCase):
             final_output = Path(directory) / 'prediction_images'
             self.assertEqual([p.name for p in final_output.iterdir()],
                              ['step_000002_sample_0.png'])
+            # ResNet is also a direct BEV predictor: production previews must
+            # work with no separate encoder or text provider, including step 0.
+            config.model.model = 'ResNetPPP'
+            with tensorboard_writer(directory, True) as writer:
+                diagnose_overfit(model, None, Dataset(), None, PPPLoss((2, 2)),
+                                 config, accelerator, 0, indices=[0], writer=writer)
+            events = EventAccumulator(str(Path(directory) / 'tensorboard')).Reload()
+            self.assertTrue(events.Tags()['images'])
+            self.assertTrue(model.training)

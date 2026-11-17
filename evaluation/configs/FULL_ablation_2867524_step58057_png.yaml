@@ -1,0 +1,17 @@
+dataset_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2867524_ablation_dit_dcae_no_bottleneck_resume_4nodes/submitted_config.yaml
+model_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2867524_ablation_dit_dcae_no_bottleneck_resume_4nodes/submitted_config.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+max_samples: null
+model: ppp
+checkpoint_path: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2867524_ablation_dit_dcae_no_bottleneck_resume_4nodes/checkpoints/epoch_44_step_58057.pth
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dit_dcae_no_bottleneck_2867524_step58057/metrics
+save_plots: true
+save_predictions: true
+tensorboard: false
+text_model_dir: /e/project1/nxtaim-1/huber7/pretrained/gemma-2-2b-it
+sana_checkpoint_path: /e/project1/nxtaim-1/huber7/pretrained/Sana_600M_512px/checkpoints/Sana_600M_512px_MultiLing.pth
+null_embed_path: output/pretrained_models/null_embed_diffusers_gemma-2-2b-it_300token_2304.pth
+plot_dpi: 110
+plot_gamma: 0.2

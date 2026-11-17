@@ -1,0 +1,14 @@
+dataset_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2863217_ablation_dino_random_init_resume_4nodes/submitted_config.yaml
+model_config: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2863217_ablation_dino_random_init_resume_4nodes/submitted_config.yaml
+seed: 42
+selection_seed: 42
+device: cuda
+max_samples: null
+model: ppp
+checkpoint_path: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/train/2863217_ablation_dino_random_init_resume_4nodes/checkpoints/epoch_91_step_29915.pth
+output_dir: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/validation/FULL_ablation_bundles/dino_random_init_2863217_step29915/metrics
+save_plots: true
+save_predictions: true
+tensorboard: false
+plot_dpi: 110
+plot_gamma: 0.2

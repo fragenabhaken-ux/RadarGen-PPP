@@ -1,0 +1,10 @@
+scene: 044c648ac12345f1aedf33c9f91cdc5a
+dataset_config: configs/PPP_train_neck.yaml
+output_root: /e/scratch/nxtaim-1/huber7/work_dirs_RadarGen/scene_comparisons
+seed: 42
+device: cuda
+fps: 10
+models:
+  dino_random_2847666_step15000:
+    label: Random-init DINO (15000)
+    validation_config: evaluation/configs/PPP_validation_ss50_2847666_step15000.yaml
